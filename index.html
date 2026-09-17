@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+<title>Lex Revisão — Estudo por Questões</title>
+<meta name="description" content="Estudo de legislação por questões Certo/Errado e Múltipla Escolha, com repetição espaçada, 100% offline." />
+
+<link rel="manifest" href="./manifest.json" />
+<meta name="theme-color" content="#0F1114" />
+<link rel="apple-touch-icon" href="./icons/icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Lex Revisão" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/dexie/dist/dexie.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          serif: ['ui-serif', 'Georgia', 'Cambria', 'Times New Roman', 'serif'],
+          sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+        },
+        colors: { stone: { 950: '#0F1114', 900: '#1C1F26', 800: '#2C313C' } },
+      },
+    },
+  };
+</script>
+<style>
+  html, body { background-color: #0F1114; color: #E7E5E4; -webkit-tap-highlight-color: transparent; overscroll-behavior-y: none; }
+  * { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .font-serif, .font-serif * { font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif; }
+  ::selection { background: #C9A24B; color: #0F1114; }
+  button { -webkit-tap-highlight-color: transparent; color: inherit; }
+  input, textarea, select { color: #0F1114; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body class="bg-stone-950 text-stone-200 min-h-screen">
+  <div id="app" class="min-h-screen"></div>
+  <script src="./app.js"></script>
+</body>
+</html>

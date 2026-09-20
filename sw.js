@@ -1,5 +1,9 @@
-// sw.js — Service Worker: cache-first, funcionamento offline
-const CACHE_NAME = "lex-revisao-v2";
+// sw.js — Service Worker
+// Arquivos do PRÓPRIO app (html/js/json): network-first — sempre busca a
+// versão mais nova quando há internet, e só usa o cache salvo se estiver
+// offline. Bibliotecas externas (CDN) e ícones: cache-first, pois raramente mudam.
+const CACHE_NAME = "lex-revisao-v3";
+const ARQUIVOS_PROPRIOS = ["/", "/index.html", "/app.js", "/manifest.json"];
 const ASSETS = [
   "./",
   "./index.html",
@@ -32,8 +36,31 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+function ehArquivoProprio(url) {
+  const caminho = new URL(url).pathname;
+  return ARQUIVOS_PROPRIOS.some((a) => caminho === a || caminho.endsWith(a.replace("./", "/")));
+}
+
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+
+  // Arquivos do próprio app: tenta a rede primeiro (pega sempre a versão mais nova)
+  if (ehArquivoProprio(event.request.url) || event.request.mode === "navigate") {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request).then((cached) => cached || caches.match("./index.html")))
+    );
+    return;
+  }
+
+  // Bibliotecas externas e ícones: cache primeiro (raramente mudam)
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;
@@ -45,9 +72,7 @@ self.addEventListener("fetch", (event) => {
           }
           return response;
         })
-        .catch(() => {
-          if (event.request.mode === "navigate") return caches.match("./index.html");
-        });
+        .catch(() => undefined);
     })
   );
 });

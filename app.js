@@ -200,15 +200,26 @@ const Store = {
 
   // Projetos / concursos-alvo
   async addProjeto(nome, descricao) {
+    const obj = { nome, descricao: descricao || "", icone: "🎯", ativo: true, materiasIds: [] };
     if (USANDO_FALLBACK) {
       const id = fallbackAutoId++;
-      fallbackDB.projetos.push({ id, nome, descricao: descricao || "" });
+      fallbackDB.projetos.push({ id, ...obj });
       agendarEnvioNuvem();
       return id;
     }
-    const id = await db.projetos.add({ nome, descricao: descricao || "" });
+    const id = await db.projetos.add(obj);
     agendarEnvioNuvem();
     return id;
+  },
+  async atualizarProjeto(projeto) {
+    if (USANDO_FALLBACK) {
+      const idx = fallbackDB.projetos.findIndex((p) => p.id === projeto.id);
+      if (idx >= 0) fallbackDB.projetos[idx] = projeto;
+      agendarEnvioNuvem();
+      return;
+    }
+    await db.projetos.put(projeto);
+    agendarEnvioNuvem();
   },
   async getAllProjetos() {
     return USANDO_FALLBACK ? [...fallbackDB.projetos] : db.projetos.toArray();
@@ -736,6 +747,7 @@ function renderizar() {
     backup: telaBackup,
     gerenciar: telaGerenciar,
     auditor: telaAuditor,
+    projetos: telaProjetos,
   };
   const fn = telas[estado.tela] || telaHome;
   app.appendChild(fn());
@@ -766,10 +778,10 @@ function telaHome() {
   optTodos.value = "";
   optTodos.textContent = "🎯 Todos os projetos";
   selectProjeto.appendChild(optTodos);
-  CACHE_PROJETOS.forEach((p) => {
+  CACHE_PROJETOS.filter((p) => p.ativo !== false).forEach((p) => {
     const opt = document.createElement("option");
     opt.value = p.id;
-    opt.textContent = `🎯 ${p.nome}`;
+    opt.textContent = `${p.icone || "🎯"} ${p.nome}`;
     if (PROJETO_ATIVO_ID === p.id) opt.selected = true;
     selectProjeto.appendChild(opt);
   });
@@ -782,12 +794,16 @@ function telaHome() {
     const nome = prompt("Nome do projeto/concurso (ex: TJ-SP Escrevente):");
     if (!nome || !nome.trim()) return;
     const id = await Store.addProjeto(nome.trim());
-    CACHE_PROJETOS.push({ id, nome: nome.trim(), descricao: "" });
+    await carregarTudo();
     await definirProjetoAtivo(id);
     renderizar();
   });
+  const btnGerenciarProjetos = criarEl("button", "text-xs text-stone-400 border border-stone-800 rounded-lg px-2.5 py-2", "⚙️");
+  btnGerenciarProjetos.title = "Gerenciar projetos";
+  btnGerenciarProjetos.addEventListener("click", () => ir("projetos"));
   wrapProjeto.appendChild(selectProjeto);
   wrapProjeto.appendChild(btnNovoProjeto);
+  wrapProjeto.appendChild(btnGerenciarProjetos);
   c.appendChild(wrapProjeto);
 
   if (USANDO_FALLBACK) {
@@ -1548,6 +1564,177 @@ function telaAuditor() {
   c.appendChild(form);
   c.appendChild(areaResultado);
   return c;
+}
+
+// ---- GERENCIAR PROJETOS (editar, arquivar, vincular matérias/questões) ----
+function telaProjetos() {
+  const c = criarEl("div", "max-w-md mx-auto px-5 pt-8 pb-24");
+  c.appendChild(cabecalho("Gerenciar projetos", "Renomeie, arquive ou vincule matérias e questões"));
+
+  if (CACHE_PROJETOS.length === 0) {
+    c.appendChild(criarEl("p", "text-stone-500 text-sm", "Nenhum projeto criado ainda. Volte à tela inicial e use \"+ Projeto\"."));
+    return c;
+  }
+
+  const lista = criarEl("div", "space-y-3");
+  CACHE_PROJETOS.forEach((p) => {
+    const qsDoProjeto = CACHE_QUESTOES.filter((q) => Array.isArray(q.projetosIds) && q.projetosIds.includes(p.id));
+    const card = criarEl("div", "bg-stone-900 border border-stone-800 rounded-xl p-4");
+
+    const topo = criarEl("div", "flex items-center justify-between mb-1");
+    const titulo = criarEl("div", "flex items-center gap-2");
+    titulo.appendChild(criarEl("span", "text-lg", p.icone || "🎯"));
+    titulo.appendChild(criarEl("span", "text-stone-100", p.nome));
+    if (p.ativo === false) titulo.appendChild(criarEl("span", "text-xs bg-stone-800 text-stone-500 rounded-full px-2 py-0.5", "arquivado"));
+    topo.appendChild(titulo);
+    const btnEditar = criarEl("button", "text-xs text-amber-400/90", "✏️ Editar");
+    topo.appendChild(btnEditar);
+    card.appendChild(topo);
+
+    card.appendChild(criarEl("p", "text-xs text-stone-500", `${(p.materiasIds || []).length} matéria(s) vinculada(s) · ${qsDoProjeto.length} questão(ões)`));
+    if (p.descricao) card.appendChild(criarEl("p", "text-xs text-stone-600 mt-1", p.descricao));
+
+    const areaEdicao = criarEl("div", "mt-3 hidden border-t border-stone-800 pt-3");
+    let montado = false;
+    btnEditar.addEventListener("click", () => {
+      const abrindo = areaEdicao.classList.contains("hidden");
+      areaEdicao.classList.toggle("hidden");
+      if (abrindo && !montado) { montarEdicaoProjeto(p, areaEdicao); montado = true; }
+      btnEditar.textContent = abrindo ? "Fechar" : "✏️ Editar";
+    });
+    card.appendChild(areaEdicao);
+
+    lista.appendChild(card);
+  });
+  c.appendChild(lista);
+  return c;
+}
+
+function montarEdicaoProjeto(p, container) {
+  const { wrap: wrapNome, input: inputNome } = campoInput("Nome do projeto", "");
+  inputNome.value = p.nome;
+  container.appendChild(wrapNome);
+
+  const { wrap: wrapDescricao, input: inputDescricao } = campoInput("Descrição (opcional)", "Ex: Edital 2026, banca VUNESP");
+  inputDescricao.value = p.descricao || "";
+  container.appendChild(wrapDescricao);
+
+  const { wrap: wrapIcone, input: inputIcone } = campoInput("Ícone (um emoji)", "🎯");
+  inputIcone.value = p.icone || "🎯";
+  container.appendChild(wrapIcone);
+
+  const wrapStatus = criarEl("div", "mt-2");
+  wrapStatus.appendChild(criarEl("label", "block text-sm text-stone-400 mb-1.5", "Status"));
+  const toggleStatus = criarEl("div", "grid grid-cols-2 gap-2");
+  let ativo = p.ativo !== false;
+  const bAtivo = criarEl("button", `rounded-lg py-2 text-sm ${ativo ? "bg-emerald-500 text-stone-950" : "bg-stone-800 text-stone-400"}`, "Ativo");
+  const bArquivado = criarEl("button", `rounded-lg py-2 text-sm ${!ativo ? "bg-stone-700 text-stone-200" : "bg-stone-800 text-stone-400"}`, "Arquivado");
+  bAtivo.addEventListener("click", () => { ativo = true; bAtivo.className = "rounded-lg py-2 text-sm bg-emerald-500 text-stone-950"; bArquivado.className = "rounded-lg py-2 text-sm bg-stone-800 text-stone-400"; });
+  bArquivado.addEventListener("click", () => { ativo = false; bArquivado.className = "rounded-lg py-2 text-sm bg-stone-700 text-stone-200"; bAtivo.className = "rounded-lg py-2 text-sm bg-stone-800 text-stone-400"; });
+  toggleStatus.appendChild(bAtivo);
+  toggleStatus.appendChild(bArquivado);
+  wrapStatus.appendChild(toggleStatus);
+  container.appendChild(wrapStatus);
+
+  // Matérias vinculadas
+  const wrapMaterias = criarEl("div", "mt-3");
+  wrapMaterias.appendChild(criarEl("label", "block text-sm text-stone-400 mb-1.5", "Matérias deste projeto"));
+  const listaMaterias = criarEl("div", "flex flex-wrap gap-2");
+  const checksMaterias = [];
+  const materiasSelecionadas = new Set(p.materiasIds || []);
+  CACHE_MATERIAS.forEach((m) => {
+    const label = criarEl("label", "flex items-center gap-1.5 bg-stone-950 border border-stone-800 rounded-lg px-2.5 py-1.5 text-xs text-stone-300");
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.className = "accent-amber-500";
+    check.checked = materiasSelecionadas.has(m.id);
+    check.dataset.materiaId = m.id;
+    checksMaterias.push(check);
+    label.appendChild(check);
+    label.appendChild(document.createTextNode(m.nome));
+    listaMaterias.appendChild(label);
+  });
+  wrapMaterias.appendChild(listaMaterias);
+  container.appendChild(wrapMaterias);
+
+  // Questões vinculadas em massa (limitado às matérias marcadas acima, ou todas se nenhuma marcada)
+  const wrapQuestoes = criarEl("div", "mt-3");
+  wrapQuestoes.appendChild(criarEl("label", "block text-sm text-stone-400 mb-1.5", "Questões vinculadas a este projeto"));
+  const listaQuestoes = criarEl("div", "space-y-1.5 max-h-64 overflow-y-auto");
+  const checksQuestoes = [];
+  function renderListaQuestoes() {
+    listaQuestoes.innerHTML = "";
+    checksQuestoes.length = 0;
+    const materiasFiltro = [...checksMaterias.filter((c) => c.checked).map((c) => Number(c.dataset.materiaId))];
+    const candidatas = materiasFiltro.length
+      ? CACHE_QUESTOES.filter((q) => materiasFiltro.includes(q.materiaId))
+      : CACHE_QUESTOES;
+    if (candidatas.length === 0) {
+      listaQuestoes.appendChild(criarEl("p", "text-xs text-stone-600", "Nenhuma questão nas matérias selecionadas."));
+      return;
+    }
+    candidatas.forEach((q) => {
+      const label = criarEl("label", "flex items-start gap-2 bg-stone-950 border border-stone-800 rounded-lg px-2.5 py-1.5 text-xs text-stone-300");
+      const check = document.createElement("input");
+      check.type = "checkbox";
+      check.className = "accent-amber-500 mt-0.5";
+      check.checked = Array.isArray(q.projetosIds) && q.projetosIds.includes(p.id);
+      check.dataset.questaoId = q.id;
+      checksQuestoes.push(check);
+      label.appendChild(check);
+      label.appendChild(criarEl("span", "", `${nomeMateria(q.materiaId)} — ${q.enunciado.slice(0, 70)}${q.enunciado.length > 70 ? "…" : ""}`));
+      listaQuestoes.appendChild(label);
+    });
+  }
+  renderListaQuestoes();
+  checksMaterias.forEach((c) => c.addEventListener("change", renderListaQuestoes));
+  wrapQuestoes.appendChild(listaQuestoes);
+  container.appendChild(wrapQuestoes);
+
+  // Ações
+  const btnSalvar = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-lg py-2.5 text-sm mt-3", "Salvar alterações");
+  btnSalvar.addEventListener("click", async () => {
+    p.nome = inputNome.value.trim() || p.nome;
+    p.descricao = inputDescricao.value.trim();
+    p.icone = inputIcone.value.trim() || "🎯";
+    p.ativo = ativo;
+    p.materiasIds = checksMaterias.filter((c) => c.checked).map((c) => Number(c.dataset.materiaId));
+    await Store.atualizarProjeto(p);
+
+    // aplica as marcações de questões em massa
+    for (const check of checksQuestoes) {
+      const qid = Number(check.dataset.questaoId);
+      const q = CACHE_QUESTOES.find((x) => x.id === qid);
+      if (!q) continue;
+      const jaTinha = Array.isArray(q.projetosIds) && q.projetosIds.includes(p.id);
+      if (check.checked && !jaTinha) {
+        q.projetosIds = [...(q.projetosIds || []), p.id];
+        await salvarQuestao(q);
+      } else if (!check.checked && jaTinha) {
+        q.projetosIds = q.projetosIds.filter((id) => id !== p.id);
+        await salvarQuestao(q);
+      }
+    }
+    await carregarTudo();
+    renderizar();
+  });
+  container.appendChild(btnSalvar);
+
+  const btnExcluir = criarEl("button", "w-full text-red-400/80 text-xs mt-3", "Excluir projeto (mantém as questões no banco)");
+  btnExcluir.addEventListener("click", async () => {
+    if (!confirm(`Excluir o projeto "${p.nome}"? As questões continuam no banco, só deixam de estar vinculadas a ele.`)) return;
+    for (const q of CACHE_QUESTOES) {
+      if (Array.isArray(q.projetosIds) && q.projetosIds.includes(p.id)) {
+        q.projetosIds = q.projetosIds.filter((id) => id !== p.id);
+        await salvarQuestao(q);
+      }
+    }
+    await Store.deleteProjeto(p.id);
+    if (PROJETO_ATIVO_ID === p.id) await definirProjetoAtivo(null);
+    await carregarTudo();
+    ir("projetos");
+  });
+  container.appendChild(btnExcluir);
 }
 
 function telaGerenciar() {

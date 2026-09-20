@@ -8,6 +8,99 @@
 const app = document.getElementById("app");
 
 // ---------------------------------------------------------
+// Firebase (login com Google + sincronização automática)
+// ---------------------------------------------------------
+const firebaseConfig = {
+  apiKey: "AIzaSyBs1NsTJabATbZ4dLkfmvb-9Oy7LYtztZk",
+  authDomain: "lex-revisao.firebaseapp.com",
+  projectId: "lex-revisao",
+  storageBucket: "lex-revisao.firebasestorage.app",
+  messagingSenderId: "305702167640",
+  appId: "1:305702167640:web:1b9d8c9463bdb5ba7cd62d",
+};
+let firebaseApp = null;
+let firebaseAuth = null;
+let firebaseDb = null;
+let usuarioLogado = null; // {uid, email, nome} ou null
+let ultimoTimestampSincronizado = 0;
+let pararEscutaNuvem = null; // função pra cancelar o listener do Firestore
+let timerEnvioNuvem = null;
+
+function configurarFirebase() {
+  try {
+    if (typeof firebase === "undefined") return; // SDK não carregou (ex: sem internet)
+    firebaseApp = firebase.initializeApp(firebaseConfig);
+    firebaseAuth = firebase.auth();
+    firebaseDb = firebase.firestore();
+    firebaseAuth.onAuthStateChanged((user) => {
+      if (user) {
+        usuarioLogado = { uid: user.uid, email: user.email, nome: user.displayName };
+        iniciarEscutaNuvem(user.uid);
+      } else {
+        usuarioLogado = null;
+        if (pararEscutaNuvem) { pararEscutaNuvem(); pararEscutaNuvem = null; }
+      }
+      if (estado.tela === "backup") renderizar();
+    });
+  } catch (e) {
+    console.warn("Firebase indisponível:", e);
+  }
+}
+
+async function entrarComGoogle() {
+  if (!firebaseAuth) return { erro: "Firebase não carregou (verifique sua internet)." };
+  try {
+    const provider = new firebase.auth.GoogleAuthProvider();
+    await firebaseAuth.signInWithPopup(provider);
+    return { ok: true };
+  } catch (e) {
+    return { erro: e.message || "Não foi possível entrar." };
+  }
+}
+async function sairDaConta() {
+  if (firebaseAuth) await firebaseAuth.signOut();
+}
+
+function iniciarEscutaNuvem(uid) {
+  if (pararEscutaNuvem) pararEscutaNuvem();
+  const ref = firebaseDb.collection("usuarios").doc(uid);
+  pararEscutaNuvem = ref.onSnapshot(async (snap) => {
+    const dados = snap.data();
+    if (!dados) return; // ainda não existe nada na nuvem pra esse usuário
+    if ((dados.atualizadoEm || 0) > ultimoTimestampSincronizado) {
+      await Store.substituirTudoLocal(dados.materias || [], dados.questoes || [], dados.projetos || []);
+      ultimoTimestampSincronizado = dados.atualizadoEm;
+      await Store.setConfig("firebaseUltimoSyncTs", ultimoTimestampSincronizado);
+      await carregarTudo();
+      if (estado.tela !== "sessao") renderizar();
+    }
+  }, (err) => console.warn("Erro ao escutar nuvem:", err));
+}
+
+function agendarEnvioNuvem() {
+  if (!usuarioLogado || !firebaseDb) return;
+  clearTimeout(timerEnvioNuvem);
+  timerEnvioNuvem = setTimeout(enviarParaNuvem, 1500);
+}
+async function enviarParaNuvem() {
+  if (!usuarioLogado || !firebaseDb) return;
+  const agora = Date.now();
+  const payload = {
+    materias: CACHE_MATERIAS,
+    questoes: CACHE_QUESTOES,
+    projetos: CACHE_PROJETOS,
+    atualizadoEm: agora,
+  };
+  try {
+    await firebaseDb.collection("usuarios").doc(usuarioLogado.uid).set(payload);
+    ultimoTimestampSincronizado = agora;
+    await Store.setConfig("firebaseUltimoSyncTs", agora);
+  } catch (e) {
+    console.warn("Falha ao sincronizar com a nuvem:", e);
+  }
+}
+
+// ---------------------------------------------------------
 // Banco de dados (IndexedDB via Dexie)
 // ---------------------------------------------------------
 const db = new Dexie("LexRevisaoDB");
@@ -15,13 +108,17 @@ db.version(1).stores({
   materias: "++id, nome",
   questoes: "++id, materiaId, tipo, assunto",
 });
+db.version(2).stores({
+  projetos: "++id, nome",
+  config: "chave",
+});
 
 // Em alguns navegadores/configurações (ex: abrir o arquivo direto do disco no
 // Windows) o IndexedDB pode ficar bloqueado. Nesse caso o app cai para uma
 // memória temporária, em vez de travar a tela toda.
 let USANDO_FALLBACK = false;
 let fallbackAutoId = 1;
-const fallbackDB = { materias: [], questoes: [] };
+const fallbackDB = { materias: [], questoes: [], projetos: [], config: {} };
 
 const Store = {
   async contarMaterias() {
@@ -31,33 +128,44 @@ const Store = {
     if (USANDO_FALLBACK) {
       const id = fallbackAutoId++;
       fallbackDB.materias.push({ id, nome });
+      agendarEnvioNuvem();
       return id;
     }
-    return db.materias.add({ nome });
+    const id = await db.materias.add({ nome });
+    agendarEnvioNuvem();
+    return id;
   },
   async addQuestao(obj) {
     if (USANDO_FALLBACK) {
       const id = fallbackAutoId++;
       fallbackDB.questoes.push({ ...obj, id });
+      agendarEnvioNuvem();
       return id;
     }
-    return db.questoes.add(obj);
+    const id = await db.questoes.add(obj);
+    agendarEnvioNuvem();
+    return id;
   },
   async putQuestao(obj) {
     if (USANDO_FALLBACK) {
       const idx = fallbackDB.questoes.findIndex((q) => q.id === obj.id);
       if (idx >= 0) fallbackDB.questoes[idx] = obj;
       else fallbackDB.questoes.push(obj);
+      agendarEnvioNuvem();
       return obj.id;
     }
-    return db.questoes.put(obj);
+    const r = await db.questoes.put(obj);
+    agendarEnvioNuvem();
+    return r;
   },
   async deleteQuestao(id) {
     if (USANDO_FALLBACK) {
       fallbackDB.questoes = fallbackDB.questoes.filter((q) => q.id !== id);
+      agendarEnvioNuvem();
       return;
     }
-    return db.questoes.delete(id);
+    await db.questoes.delete(id);
+    agendarEnvioNuvem();
   },
   async getAllMaterias() {
     return USANDO_FALLBACK ? [...fallbackDB.materias] : db.materias.toArray();
@@ -88,6 +196,64 @@ const Store = {
       }
     }
     return mapa;
+  },
+
+  // Projetos / concursos-alvo
+  async addProjeto(nome, descricao) {
+    if (USANDO_FALLBACK) {
+      const id = fallbackAutoId++;
+      fallbackDB.projetos.push({ id, nome, descricao: descricao || "" });
+      agendarEnvioNuvem();
+      return id;
+    }
+    const id = await db.projetos.add({ nome, descricao: descricao || "" });
+    agendarEnvioNuvem();
+    return id;
+  },
+  async getAllProjetos() {
+    return USANDO_FALLBACK ? [...fallbackDB.projetos] : db.projetos.toArray();
+  },
+  async deleteProjeto(id) {
+    if (USANDO_FALLBACK) {
+      fallbackDB.projetos = fallbackDB.projetos.filter((p) => p.id !== id);
+      agendarEnvioNuvem();
+      return;
+    }
+    await db.projetos.delete(id);
+    agendarEnvioNuvem();
+  },
+
+  // Aplica um "retrato" completo vindo da nuvem (substitui tudo, preservando os IDs originais
+  // pra manter as referências entre questões/matérias/projetos intactas)
+  async substituirTudoLocal(materiasNovas, questoesNovas, projetosNovas) {
+    if (USANDO_FALLBACK) {
+      fallbackDB.materias = materiasNovas;
+      fallbackDB.questoes = questoesNovas;
+      fallbackDB.projetos = projetosNovas;
+      return;
+    }
+    await db.transaction("rw", db.materias, db.questoes, db.projetos, async () => {
+      await db.materias.clear();
+      await db.questoes.clear();
+      await db.projetos.clear();
+      if (materiasNovas.length) await db.materias.bulkAdd(materiasNovas);
+      if (questoesNovas.length) await db.questoes.bulkAdd(questoesNovas);
+      if (projetosNovas.length) await db.projetos.bulkAdd(projetosNovas);
+    });
+  },
+
+  // Configurações simples (chave/valor) — ex: projeto ativo
+  async getConfig(chave) {
+    if (USANDO_FALLBACK) return fallbackDB.config[chave] ?? null;
+    const row = await db.config.get(chave);
+    return row ? row.valor : null;
+  },
+  async setConfig(chave, valor) {
+    if (USANDO_FALLBACK) {
+      fallbackDB.config[chave] = valor;
+      return;
+    }
+    return db.config.put({ chave, valor });
   },
 };
 
@@ -167,6 +333,8 @@ async function seedInicial() {
       alternativas: q.alternativas || null,
       gabarito: q.tipo === "CE" ? q.gabarito : null,
       justificativa: q.justificativa,
+      projetosIds: [],
+      precisaRevisao: false,
       srs: novoSRS(),
     });
   }
@@ -175,10 +343,32 @@ async function seedInicial() {
 // Cache em memória (carregado do IndexedDB; toda mutação também grava no banco)
 let CACHE_MATERIAS = [];
 let CACHE_QUESTOES = [];
+let CACHE_PROJETOS = [];
+let PROJETO_ATIVO_ID = null; // null = "todos os projetos" (sem filtro)
 
 async function carregarTudo() {
   CACHE_MATERIAS = await Store.getAllMaterias();
   CACHE_QUESTOES = await Store.getAllQuestoes();
+  CACHE_PROJETOS = await Store.getAllProjetos();
+  const salvo = await Store.getConfig("projetoAtivoId");
+  PROJETO_ATIVO_ID = salvo ? Number(salvo) : null;
+}
+
+function nomeProjeto(id) {
+  const p = CACHE_PROJETOS.find((x) => x.id === id);
+  return p ? p.nome : "—";
+}
+
+// Filtra uma lista de questões pelo projeto ativo (se houver). Questões sem
+// nenhum projeto vinculado só aparecem quando NENHUM projeto está ativo.
+function filtrarPorProjetoAtivo(lista) {
+  if (!PROJETO_ATIVO_ID) return lista;
+  return lista.filter((q) => Array.isArray(q.projetosIds) && q.projetosIds.includes(PROJETO_ATIVO_ID));
+}
+
+async function definirProjetoAtivo(id) {
+  PROJETO_ATIVO_ID = id || null;
+  await Store.setConfig("projetoAtivoId", PROJETO_ATIVO_ID || "");
 }
 
 function nomeMateria(materiaId) {
@@ -367,6 +557,41 @@ function parseImportacao(raw, tipo) {
 }
 
 // ---------------------------------------------------------
+// Auditor de legislação — similaridade de texto (Jaccard sobre palavras)
+// Compara a justificativa/enunciado de cada questão com o texto atualizado
+// da lei, para sinalizar possíveis desatualizações.
+// ---------------------------------------------------------
+function tokenizar(texto) {
+  return (texto || "")
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
+}
+function similaridadeJaccard(a, b) {
+  const tokensA = new Set(tokenizar(a));
+  const tokensB = new Set(tokenizar(b));
+  if (tokensA.size === 0 || tokensB.size === 0) return 0;
+  let intersecao = 0;
+  tokensA.forEach((t) => { if (tokensB.has(t)) intersecao++; });
+  const uniao = new Set([...tokensA, ...tokensB]).size;
+  return uniao === 0 ? 0 : intersecao / uniao;
+}
+function melhorTrechoSimilar(textoQuestao, textoLeiAtualizada) {
+  const frases = textoLeiAtualizada
+    .split(/(?<=[.;])\s+/)
+    .map((f) => f.trim())
+    .filter((f) => f.length > 8);
+  let melhor = { frase: null, score: 0 };
+  frases.forEach((f) => {
+    const score = similaridadeJaccard(textoQuestao, f);
+    if (score > melhor.score) melhor = { frase: f, score };
+  });
+  return melhor;
+}
+
+// ---------------------------------------------------------
 // Estado de navegação
 // ---------------------------------------------------------
 let estado = { tela: "home" };
@@ -462,6 +687,31 @@ function alertaInline(container, msg) {
   if (existente) existente.remove();
   container.appendChild(criarEl("p", "alerta-inline text-sm text-red-400 mt-1", msg));
 }
+function campoSelecaoProjetos() {
+  const wrap = criarEl("div");
+  if (CACHE_PROJETOS.length === 0) return { wrap, getSelecionados: () => [] };
+  wrap.appendChild(criarEl("label", "block text-sm text-stone-400 mb-1.5", "Vincular a projetos/concursos (opcional)"));
+  const lista = criarEl("div", "flex flex-wrap gap-2");
+  const checkboxes = [];
+  CACHE_PROJETOS.forEach((p) => {
+    const id = `proj-${p.id}-${Math.random().toString(36).slice(2, 6)}`;
+    const label = criarEl("label", "flex items-center gap-1.5 bg-stone-900 border border-stone-800 rounded-lg px-2.5 py-1.5 text-xs text-stone-300");
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.className = "accent-amber-500";
+    check.checked = PROJETO_ATIVO_ID === p.id;
+    check.dataset.projetoId = p.id;
+    checkboxes.push(check);
+    label.appendChild(check);
+    label.appendChild(document.createTextNode(p.nome));
+    lista.appendChild(label);
+  });
+  wrap.appendChild(lista);
+  return {
+    wrap,
+    getSelecionados: () => checkboxes.filter((c) => c.checked).map((c) => Number(c.dataset.projetoId)),
+  };
+}
 function statBox(label, valor) {
   const b = criarEl("div", "bg-stone-900/60 border border-stone-800 rounded-xl p-4");
   b.appendChild(criarEl("p", "text-2xl font-serif text-stone-100", valor));
@@ -485,6 +735,7 @@ function renderizar() {
     estatisticas: telaEstatisticas,
     backup: telaBackup,
     gerenciar: telaGerenciar,
+    auditor: telaAuditor,
   };
   const fn = telas[estado.tela] || telaHome;
   app.appendChild(fn());
@@ -493,10 +744,11 @@ function renderizar() {
 
 // ---- HOME ----
 function telaHome() {
-  const pendentes = CACHE_QUESTOES.filter(estaPendenteHoje);
+  const questoesDoProjeto = filtrarPorProjetoAtivo(CACHE_QUESTOES);
+  const pendentes = questoesDoProjeto.filter(estaPendenteHoje);
   const c = criarEl("div", "max-w-md mx-auto px-5 pt-8 pb-24");
 
-  const brand = criarEl("div", "mb-8 flex items-center justify-between");
+  const brand = criarEl("div", "mb-4 flex items-center justify-between");
   const tit = criarEl("div");
   tit.appendChild(criarEl("p", "text-xs tracking-wide text-amber-500/80 mb-1", "Lex Revisão"));
   tit.appendChild(criarEl("h1", "font-serif text-2xl text-stone-100", "Bons estudos."));
@@ -505,6 +757,38 @@ function telaHome() {
   btnStats.addEventListener("click", () => ir("estatisticas"));
   brand.appendChild(btnStats);
   c.appendChild(brand);
+
+  // Seletor de projeto ativo (concurso-alvo)
+  const wrapProjeto = criarEl("div", "flex items-center gap-2 mb-6");
+  const selectProjeto = document.createElement("select");
+  selectProjeto.className = "flex-1 bg-stone-900 border border-stone-800 rounded-lg px-3 py-2 text-sm text-stone-200 outline-none";
+  const optTodos = document.createElement("option");
+  optTodos.value = "";
+  optTodos.textContent = "🎯 Todos os projetos";
+  selectProjeto.appendChild(optTodos);
+  CACHE_PROJETOS.forEach((p) => {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = `🎯 ${p.nome}`;
+    if (PROJETO_ATIVO_ID === p.id) opt.selected = true;
+    selectProjeto.appendChild(opt);
+  });
+  selectProjeto.addEventListener("change", async () => {
+    await definirProjetoAtivo(selectProjeto.value ? Number(selectProjeto.value) : null);
+    renderizar();
+  });
+  const btnNovoProjeto = criarEl("button", "text-xs text-amber-400 border border-amber-500/30 rounded-lg px-2 py-2 whitespace-nowrap", "+ Projeto");
+  btnNovoProjeto.addEventListener("click", async () => {
+    const nome = prompt("Nome do projeto/concurso (ex: TJ-SP Escrevente):");
+    if (!nome || !nome.trim()) return;
+    const id = await Store.addProjeto(nome.trim());
+    CACHE_PROJETOS.push({ id, nome: nome.trim(), descricao: "" });
+    await definirProjetoAtivo(id);
+    renderizar();
+  });
+  wrapProjeto.appendChild(selectProjeto);
+  wrapProjeto.appendChild(btnNovoProjeto);
+  c.appendChild(wrapProjeto);
 
   if (USANDO_FALLBACK) {
     const aviso = criarEl(
@@ -538,9 +822,9 @@ function telaHome() {
   cardMaterias.addEventListener("click", () => ir("materias"));
   c.appendChild(cardMaterias);
 
-  const total = CACHE_QUESTOES.length;
-  const acertosTotais = CACHE_QUESTOES.reduce((n, q) => n + q.srs.historico.filter((h) => h.acertou).length, 0);
-  const tentativasTotais = CACHE_QUESTOES.reduce((n, q) => n + q.srs.historico.length, 0);
+  const total = questoesDoProjeto.length;
+  const acertosTotais = questoesDoProjeto.reduce((n, q) => n + q.srs.historico.filter((h) => h.acertou).length, 0);
+  const tentativasTotais = questoesDoProjeto.reduce((n, q) => n + q.srs.historico.length, 0);
   const pct = tentativasTotais ? Math.round((acertosTotais / tentativasTotais) * 100) : null;
   const stats = criarEl("div", "grid grid-cols-2 gap-3 mb-8");
   stats.appendChild(statBox("Questões no banco", total.toString()));
@@ -565,6 +849,10 @@ function telaHome() {
   linha2.appendChild(btnGerenciar);
   acoes.appendChild(linha2);
 
+  const btnAuditor = criarEl("button", "w-full text-stone-400 text-sm py-2 border border-stone-800 rounded-lg", "⚖️ Auditor de legislação");
+  btnAuditor.addEventListener("click", () => ir("auditor"));
+  acoes.appendChild(btnAuditor);
+
   c.appendChild(acoes);
   return c;
 }
@@ -580,6 +868,9 @@ function telaImportar() {
 
   const { wrap: wrapAssunto, input: inputAssunto } = campoInput("Assunto / subtópico", 'Ex: "Crimes contra a Administração — Art. 312 a 327"');
   form.appendChild(wrapAssunto);
+
+  const { wrap: wrapProjetos, getSelecionados: getProjetosSelecionados } = campoSelecaoProjetos();
+  form.appendChild(wrapProjetos);
 
   const wrapTipo = criarEl("div");
   wrapTipo.appendChild(criarEl("label", "block text-sm text-stone-400 mb-1.5", "Formato"));
@@ -647,6 +938,7 @@ function telaImportar() {
       const btnConfirmar = criarEl("button", "w-full bg-emerald-500 text-stone-950 font-medium rounded-xl py-3.5", `Confirmar e salvar ${registros.length} questão(ões)`);
       btnConfirmar.addEventListener("click", async () => {
         const materiaId = Number(selectMateria.value);
+        const projetosIds = getProjetosSelecionados();
         for (const r of registros) {
           await Store.addQuestao({
             materiaId, assunto, tipo: r.tipo,
@@ -654,6 +946,8 @@ function telaImportar() {
             alternativas: r.alternativas,
             gabarito: r.gabarito,
             justificativa: r.justificativa,
+            projetosIds,
+            precisaRevisao: false,
             srs: novoSRS(),
           });
         }
@@ -744,6 +1038,9 @@ function telaManual() {
   const { wrap: wrapJustificativa, input: inputJustificativa } = campoTextarea("Justificativa / trecho da lei", "Cole o trecho exato da lei...", 3);
   form.appendChild(wrapJustificativa);
 
+  const { wrap: wrapProjetos, getSelecionados: getProjetosSelecionados } = campoSelecaoProjetos();
+  form.appendChild(wrapProjetos);
+
   const btnSalvar = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-xl py-3.5 mt-2", "Salvar questão");
   btnSalvar.addEventListener("click", async () => {
     const materiaId = Number(selectMateria.value);
@@ -751,7 +1048,13 @@ function telaManual() {
     const enunciado = inputEnunciado.value.trim();
     if (!assunto || !enunciado) { alertaInline(form, "Preencha ao menos o assunto e o enunciado."); return; }
 
-    let payload = { materiaId, assunto, tipo: tipoSelecionado, enunciado, justificativa: inputJustificativa.value.trim(), srs: novoSRS() };
+    let payload = {
+      materiaId, assunto, tipo: tipoSelecionado, enunciado,
+      justificativa: inputJustificativa.value.trim(),
+      projetosIds: getProjetosSelecionados(),
+      precisaRevisao: false,
+      srs: novoSRS(),
+    };
     if (tipoSelecionado === "CE") {
       payload.gabarito = gabaritoCE;
       payload.alternativas = null;
@@ -776,11 +1079,12 @@ function telaManual() {
 // ---- MATÉRIAS ----
 function telaMaterias() {
   const c = criarEl("div", "max-w-md mx-auto px-5 pt-8 pb-24");
-  c.appendChild(cabecalho("Treinar por matéria"));
+  c.appendChild(cabecalho("Treinar por matéria", PROJETO_ATIVO_ID ? `Filtrando pelo projeto: ${nomeProjeto(PROJETO_ATIVO_ID)}` : null));
 
+  const questoesDoProjeto = filtrarPorProjetoAtivo(CACHE_QUESTOES);
   const lista = criarEl("div", "space-y-3");
   CACHE_MATERIAS.forEach((m) => {
-    const qs = CACHE_QUESTOES.filter((q) => q.materiaId === m.id);
+    const qs = questoesDoProjeto.filter((q) => q.materiaId === m.id);
     const pendentes = qs.filter(estaPendenteHoje).length;
     const card = criarEl("button", "w-full text-left bg-stone-900 border border-stone-800 rounded-xl p-4 flex items-center justify-between");
     card.innerHTML = `
@@ -949,10 +1253,11 @@ function telaResumoSessao() {
 // ---- ESTATÍSTICAS ----
 function telaEstatisticas() {
   const c = criarEl("div", "max-w-md mx-auto px-5 pt-8 pb-24");
-  c.appendChild(cabecalho("Estatísticas"));
+  c.appendChild(cabecalho("Estatísticas", PROJETO_ATIVO_ID ? `Projeto: ${nomeProjeto(PROJETO_ATIVO_ID)}` : "Todos os projetos"));
 
-  const acertosTotais = CACHE_QUESTOES.reduce((n, q) => n + q.srs.historico.filter((h) => h.acertou).length, 0);
-  const tentativasTotais = CACHE_QUESTOES.reduce((n, q) => n + q.srs.historico.length, 0);
+  const questoesDoProjeto = filtrarPorProjetoAtivo(CACHE_QUESTOES);
+  const acertosTotais = questoesDoProjeto.reduce((n, q) => n + q.srs.historico.filter((h) => h.acertou).length, 0);
+  const tentativasTotais = questoesDoProjeto.reduce((n, q) => n + q.srs.historico.length, 0);
   const pctGeral = tentativasTotais ? Math.round((acertosTotais / tentativasTotais) * 100) : 0;
 
   const cardGeral = criarEl("div", "bg-stone-900 border border-stone-800 rounded-2xl p-5 mb-6");
@@ -963,7 +1268,7 @@ function telaEstatisticas() {
 
   const materiasComDados = CACHE_MATERIAS
     .map((m) => {
-      const qs = CACHE_QUESTOES.filter((q) => q.materiaId === m.id);
+      const qs = questoesDoProjeto.filter((q) => q.materiaId === m.id);
       const tent = qs.reduce((n, q) => n + q.srs.historico.length, 0);
       const ac = qs.reduce((n, q) => n + q.srs.historico.filter((h) => h.acertou).length, 0);
       return { nome: m.nome, id: m.id, tent, pct: tent ? Math.round((ac / tent) * 100) : null };
@@ -1014,7 +1319,7 @@ function telaEstatisticas() {
   function renderAssuntos() {
     areaAssuntos.innerHTML = "";
     const materiaId = Number(select.value);
-    const qs = CACHE_QUESTOES.filter((q) => q.materiaId === materiaId);
+    const qs = questoesDoProjeto.filter((q) => q.materiaId === materiaId);
     const porAssunto = {};
     qs.forEach((q) => {
       const chave = q.assunto || "(sem assunto)";
@@ -1045,7 +1350,39 @@ function telaEstatisticas() {
 // ---- BACKUP / RESTAURAR ----
 function telaBackup() {
   const c = criarEl("div", "max-w-md mx-auto px-5 pt-8 pb-24");
-  c.appendChild(cabecalho("Backup e sincronização", "Sem login — apenas copiar e colar"));
+  c.appendChild(cabecalho("Backup e sincronização"));
+
+  // --- Sincronização automática (Google/Firebase) ---
+  const secNuvem = criarEl("div", "bg-stone-900 border border-stone-800 rounded-2xl p-4 mb-6");
+  secNuvem.appendChild(criarEl("p", "text-stone-200 mb-1", "☁️ Sincronização automática"));
+
+  if (!firebaseAuth) {
+    secNuvem.appendChild(criarEl("p", "text-xs text-stone-500", "Não foi possível carregar a sincronização (verifique sua internet e recarregue a página)."));
+  } else if (usuarioLogado) {
+    secNuvem.appendChild(criarEl("p", "text-xs text-emerald-400 mb-3", `Conectado como ${usuarioLogado.email}. Os dados sincronizam sozinhos entre seus aparelhos quando há internet.`));
+    const btnSair = criarEl("button", "w-full bg-stone-800 text-stone-300 rounded-xl py-2.5 text-sm", "Sair / desconectar este aparelho");
+    btnSair.addEventListener("click", async () => { await sairDaConta(); renderizar(); });
+    secNuvem.appendChild(btnSair);
+  } else {
+    secNuvem.appendChild(criarEl("p", "text-xs text-stone-500 mb-3", "Entre com sua conta Google para sincronizar automaticamente entre o PC e o celular, sem precisar copiar nada. Faça isso nos dois aparelhos, com a mesma conta."));
+    const btnEntrar = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-xl py-3 flex items-center justify-center gap-2", "Entrar com Google");
+    btnEntrar.addEventListener("click", async () => {
+      btnEntrar.disabled = true;
+      btnEntrar.textContent = "Conectando...";
+      const r = await entrarComGoogle();
+      if (r.erro) {
+        alertaInline(secNuvem, r.erro);
+        btnEntrar.disabled = false;
+        btnEntrar.textContent = "Entrar com Google";
+      } else {
+        renderizar();
+      }
+    });
+    secNuvem.appendChild(btnEntrar);
+  }
+  c.appendChild(secNuvem);
+
+  c.appendChild(criarEl("p", "text-xs text-stone-600 mb-2", "Ou, se preferir fazer manualmente (não precisa de conta):"));
 
   const secExport = criarEl("div", "bg-stone-900 border border-stone-800 rounded-2xl p-4 mb-6");
   secExport.appendChild(criarEl("p", "text-stone-200 mb-1", "Gerar backup"));
@@ -1136,6 +1473,83 @@ function telaBackup() {
 }
 
 // ---- GERENCIAR ----
+// ---- AUDITOR DE LEGISLAÇÃO ----
+function telaAuditor() {
+  const c = criarEl("div", "max-w-md mx-auto px-5 pt-8 pb-24");
+  c.appendChild(cabecalho("Auditor de legislação", "Cole a redação atualizada de uma lei e veja quais questões podem ter ficado desatualizadas"));
+
+  const form = criarEl("div", "space-y-4");
+  const { wrap: wrapMateria, select: selectMateria } = campoSelectMaterias();
+  form.appendChild(wrapMateria);
+
+  const { wrap: wrapAssunto, input: inputAssunto } = campoInput("Filtrar por assunto (opcional)", "Ex: Crimes contra a Administração");
+  form.appendChild(wrapAssunto);
+
+  const { wrap: wrapTexto, input: textareaTexto } = campoTextarea("Texto atualizado da lei", "Cole aqui a redação nova do artigo/lei...", 8);
+  form.appendChild(wrapTexto);
+
+  const btnRodar = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-xl py-3.5", "Rodar auditoria");
+  const areaResultado = criarEl("div", "mt-5 space-y-3");
+
+  btnRodar.addEventListener("click", () => {
+    areaResultado.innerHTML = "";
+    const textoLei = textareaTexto.value.trim();
+    if (!textoLei) { alertaInline(form, "Cole o texto atualizado da lei antes de rodar."); return; }
+    const materiaId = Number(selectMateria.value);
+    const filtroAssunto = inputAssunto.value.trim().toLowerCase();
+
+    const candidatas = CACHE_QUESTOES.filter((q) => {
+      if (q.materiaId !== materiaId) return false;
+      if (filtroAssunto && !(q.assunto || "").toLowerCase().includes(filtroAssunto)) return false;
+      return true;
+    });
+
+    if (candidatas.length === 0) {
+      areaResultado.appendChild(criarEl("p", "text-stone-500 text-sm", "Nenhuma questão cadastrada nessa matéria/assunto para comparar."));
+      return;
+    }
+
+    const resultados = candidatas.map((q) => {
+      const base = q.justificativa || q.enunciado;
+      const { frase, score } = melhorTrechoSimilar(base, textoLei);
+      return { q, frase, score };
+    });
+    resultados.sort((a, b) => a.score - b.score);
+
+    const flagradas = resultados.filter((r) => r.score < 0.35);
+    const resumo = criarEl("div", "bg-stone-900 border border-stone-800 rounded-xl p-4 mb-2");
+    resumo.appendChild(criarEl("p", "text-stone-200", `${candidatas.length} questão(ões) analisada(s).`));
+    resumo.appendChild(criarEl("p", `text-sm mt-1 ${flagradas.length ? "text-amber-400" : "text-emerald-400"}`, flagradas.length ? `${flagradas.length} possível(is) desatualização(ões) encontrada(s).` : "Nenhuma divergência significativa encontrada."));
+    areaResultado.appendChild(resumo);
+
+    resultados.forEach(({ q, frase, score }) => {
+      const flagrada = score < 0.35;
+      if (!flagrada) return; // mostra só as suspeitas, pra não poluir
+      const card = criarEl("div", "bg-red-500/5 border border-red-500/30 rounded-xl p-4");
+      card.appendChild(criarEl("span", "text-xs bg-red-500/15 text-red-400 rounded-full px-2 py-0.5", "⚠️ Possível Desatualização"));
+      card.appendChild(criarEl("p", "text-sm text-stone-300 font-serif leading-relaxed mt-2", q.enunciado));
+      card.appendChild(criarEl("p", "text-xs text-stone-500 mt-2", `Justificativa atual: "${q.justificativa || "—"}"`));
+      card.appendChild(criarEl("p", "text-xs text-stone-500 mt-1", frase ? `Trecho mais parecido no texto novo (${Math.round(score * 100)}% similar): "${frase}"` : "Nenhum trecho parecido encontrado no texto colado — o artigo pode ter sido revogado."));
+      const btnMarcar = criarEl("button", "text-xs text-amber-400 mt-2", q.precisaRevisao ? "✓ já marcada para revisar" : "Marcar para revisar");
+      if (!q.precisaRevisao) {
+        btnMarcar.addEventListener("click", async () => {
+          q.precisaRevisao = true;
+          await salvarQuestao(q);
+          btnMarcar.textContent = "✓ já marcada para revisar";
+        });
+      }
+      card.appendChild(document.createElement("br"));
+      card.appendChild(btnMarcar);
+      areaResultado.appendChild(card);
+    });
+  });
+
+  form.appendChild(btnRodar);
+  c.appendChild(form);
+  c.appendChild(areaResultado);
+  return c;
+}
+
 function telaGerenciar() {
   const c = criarEl("div", "max-w-md mx-auto px-5 pt-8 pb-24");
   c.appendChild(cabecalho("Gerenciar banco de questões"));
@@ -1149,21 +1563,93 @@ function telaGerenciar() {
   [...CACHE_QUESTOES].reverse().forEach((q) => {
     const card = criarEl("div", "bg-stone-900 border border-stone-800 rounded-xl p-4");
     const topo = criarEl("div", "flex items-center justify-between mb-2");
-    topo.appendChild(criarEl("span", "text-xs text-amber-500/80", `${nomeMateria(q.materiaId)} · ${q.tipo}`));
+    const tags = criarEl("div", "flex items-center gap-2 flex-wrap");
+    tags.appendChild(criarEl("span", "text-xs text-amber-500/80", `${nomeMateria(q.materiaId)} · ${q.tipo}`));
+    if (q.precisaRevisao) tags.appendChild(criarEl("span", "text-xs bg-red-500/15 text-red-400 rounded-full px-2 py-0.5", "🚩 revisar"));
+    if (Array.isArray(q.projetosIds) && q.projetosIds.length > 0) {
+      q.projetosIds.forEach((pid) => tags.appendChild(criarEl("span", "text-xs bg-stone-800 text-stone-400 rounded-full px-2 py-0.5", nomeProjeto(pid))));
+    }
+    topo.appendChild(tags);
+
+    const acoes = criarEl("div", "flex items-center gap-3 flex-shrink-0");
+    const btnEditar = criarEl("button", "text-xs text-amber-400/90", "Editar");
     const btnExcluir = criarEl("button", "text-xs text-red-400/80", "Excluir");
     btnExcluir.addEventListener("click", async () => {
       await Store.deleteQuestao(q.id);
       await carregarTudo();
       renderizar();
     });
-    topo.appendChild(btnExcluir);
+    acoes.appendChild(btnEditar);
+    acoes.appendChild(btnExcluir);
+    topo.appendChild(acoes);
     card.appendChild(topo);
-    card.appendChild(criarEl("p", "text-sm text-stone-300 font-serif leading-relaxed mb-1", q.enunciado));
-    card.appendChild(criarEl("p", "text-xs text-stone-600", `Acertos seguidos: ${q.srs.acertosSeguidos} · Próxima: ${formatarDataBR(q.srs.proximaRevisaoData)}`));
+
+    const corpo = criarEl("div");
+    corpo.appendChild(criarEl("p", "text-sm text-stone-300 font-serif leading-relaxed mb-1", q.enunciado));
+    corpo.appendChild(criarEl("p", "text-xs text-stone-600", `Acertos seguidos: ${q.srs.acertosSeguidos} · Próxima: ${formatarDataBR(q.srs.proximaRevisaoData)}`));
+    card.appendChild(corpo);
+
+    const areaEdicao = criarEl("div", "mt-3 hidden space-y-2 border-t border-stone-800 pt-3");
+    let edicaoMontada = false;
+    btnEditar.addEventListener("click", () => {
+      const abrindo = areaEdicao.classList.contains("hidden");
+      areaEdicao.classList.toggle("hidden");
+      if (abrindo && !edicaoMontada) {
+        montarEdicao(q, areaEdicao, () => { carregarTudo().then(renderizar); });
+        edicaoMontada = true;
+      }
+      btnEditar.textContent = abrindo ? "Fechar" : "Editar";
+    });
+    card.appendChild(areaEdicao);
+
     lista.appendChild(card);
   });
   c.appendChild(lista);
   return c;
+}
+
+function montarEdicao(q, container, aoSalvar) {
+  const { wrap: wrapEnunciado, input: inputEnunciado } = campoTextarea("Enunciado", "", 3);
+  inputEnunciado.value = q.enunciado;
+  container.appendChild(wrapEnunciado);
+
+  const { wrap: wrapJustificativa, input: inputJustificativa } = campoTextarea("Justificativa", "", 2);
+  inputJustificativa.value = q.justificativa || "";
+  container.appendChild(wrapJustificativa);
+
+  if (q.tipo === "CE") {
+    const wrapGab = criarEl("div", "grid grid-cols-2 gap-2");
+    const bC = criarEl("button", `rounded-lg py-2 text-sm ${q.gabarito ? "bg-emerald-500 text-stone-950" : "bg-stone-800 text-stone-400"}`, "Certo");
+    const bE = criarEl("button", `rounded-lg py-2 text-sm ${!q.gabarito ? "bg-red-500 text-stone-950" : "bg-stone-800 text-stone-400"}`, "Errado");
+    let novoGabarito = q.gabarito;
+    bC.addEventListener("click", () => { novoGabarito = true; bC.className = "rounded-lg py-2 text-sm bg-emerald-500 text-stone-950"; bE.className = "rounded-lg py-2 text-sm bg-stone-800 text-stone-400"; });
+    bE.addEventListener("click", () => { novoGabarito = false; bE.className = "rounded-lg py-2 text-sm bg-red-500 text-stone-950"; bC.className = "rounded-lg py-2 text-sm bg-stone-800 text-stone-400"; });
+    wrapGab.appendChild(bC);
+    wrapGab.appendChild(bE);
+    container.appendChild(wrapGab);
+    container.dataset._getGabarito = "";
+    container._pegarGabarito = () => novoGabarito;
+  }
+
+  const wrapFlag = criarEl("label", "flex items-center gap-2 text-xs text-stone-400");
+  const checkFlag = document.createElement("input");
+  checkFlag.type = "checkbox";
+  checkFlag.className = "accent-red-500";
+  checkFlag.checked = !!q.precisaRevisao;
+  wrapFlag.appendChild(checkFlag);
+  wrapFlag.appendChild(document.createTextNode("🚩 Marcar para revisar depois"));
+  container.appendChild(wrapFlag);
+
+  const btnSalvar = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-lg py-2.5 text-sm mt-1", "Salvar edição");
+  btnSalvar.addEventListener("click", async () => {
+    q.enunciado = inputEnunciado.value.trim();
+    q.justificativa = inputJustificativa.value.trim();
+    q.precisaRevisao = checkFlag.checked;
+    if (q.tipo === "CE" && container._pegarGabarito) q.gabarito = container._pegarGabarito();
+    await salvarQuestao(q);
+    aoSalvar();
+  });
+  container.appendChild(btnSalvar);
 }
 
 // ---------------------------------------------------------
@@ -1173,6 +1659,8 @@ async function iniciar() {
   await ativarModoFallbackSeNecessario();
   await seedInicial();
   await carregarTudo();
+  ultimoTimestampSincronizado = Number((await Store.getConfig("firebaseUltimoSyncTs")) || 0);
+  configurarFirebase();
   renderizar();
 
   if ("serviceWorker" in navigator) {

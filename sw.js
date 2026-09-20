@@ -10,6 +10,9 @@ const ASSETS = [
   "https://cdn.tailwindcss.com",
   "https://unpkg.com/dexie/dist/dexie.js",
   "https://cdn.jsdelivr.net/npm/chart.js",
+  "https://cdnjs.cloudflare.com/ajax/libs/firebase/10.13.0/firebase-app-compat.min.js",
+  "https://cdnjs.cloudflare.com/ajax/libs/firebase/10.13.0/firebase-auth-compat.min.js",
+  "https://cdnjs.cloudflare.com/ajax/libs/firebase/10.13.0/firebase-firestore-compat.min.js",
 ];
 
 self.addEventListener("install", (event) => {

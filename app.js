@@ -1267,99 +1267,377 @@ function telaResumoSessao() {
 }
 
 // ---- ESTATÍSTICAS ----
+// ---- ESTATÍSTICAS ----
+function historicoNoPeriodo(q, dataIni, dataFim) {
+  return (q.srs.historico || []).filter(
+    (h) => (!dataIni || h.data >= dataIni) && (!dataFim || h.data <= dataFim)
+  );
+}
+
+function calcularArvoreEstatisticas(dataIni, dataFim) {
+  const questoesBase = filtrarPorProjetoAtivo(CACHE_QUESTOES);
+  const porMateria = {};
+  questoesBase.forEach((q) => {
+    if (!porMateria[q.materiaId]) {
+      porMateria[q.materiaId] = { assuntos: {}, resolvidas: 0, acertos: 0 };
+    }
+    const m = porMateria[q.materiaId];
+    const chaveAssunto = q.assunto || "(sem assunto)";
+    if (!m.assuntos[chaveAssunto]) {
+      m.assuntos[chaveAssunto] = { resolvidas: 0, acertos: 0, idsQuestoes: [] };
+    }
+    const a = m.assuntos[chaveAssunto];
+    a.idsQuestoes.push(q.id);
+    const hist = historicoNoPeriodo(q, dataIni, dataFim);
+    hist.forEach((h) => {
+      a.resolvidas++;
+      m.resolvidas++;
+      if (h.acertou) { a.acertos++; m.acertos++; }
+    });
+  });
+  return porMateria;
+}
+
 function telaEstatisticas() {
   const c = criarEl("div", "max-w-md mx-auto px-5 pt-8 pb-24");
   c.appendChild(cabecalho("Estatísticas", PROJETO_ATIVO_ID ? `Projeto: ${nomeProjeto(PROJETO_ATIVO_ID)}` : "Todos os projetos"));
 
-  const questoesDoProjeto = filtrarPorProjetoAtivo(CACHE_QUESTOES);
-  const acertosTotais = questoesDoProjeto.reduce((n, q) => n + q.srs.historico.filter((h) => h.acertou).length, 0);
-  const tentativasTotais = questoesDoProjeto.reduce((n, q) => n + q.srs.historico.length, 0);
-  const pctGeral = tentativasTotais ? Math.round((acertosTotais / tentativasTotais) * 100) : 0;
+  // --- Estado local desta tela (mantido enquanto ela está aberta) ---
+  const st = {
+    dataIni: null,
+    dataFim: null,
+    ordenacao: "indice", // indice | crescente | decrescente
+    mostrarGrafico: true,
+    mostrarTexto: true,
+    expandido: new Set(),
+    selecionados: new Set(), // chaves "materiaId|assunto"
+  };
 
-  const cardGeral = criarEl("div", "bg-stone-900 border border-stone-800 rounded-2xl p-5 mb-6");
-  cardGeral.appendChild(criarEl("p", "text-sm text-stone-400", "Taxa geral de acertos"));
-  cardGeral.appendChild(criarEl("p", "font-serif text-4xl text-amber-400 mt-1", tentativasTotais ? `${pctGeral}%` : "—"));
-  cardGeral.appendChild(criarEl("p", "text-xs text-stone-500 mt-1", `${acertosTotais} acertos · ${tentativasTotais - acertosTotais} erros · ${tentativasTotais} tentativas`));
-  c.appendChild(cardGeral);
+  // --- Barra de filtro de período ---
+  const barraFiltro = criarEl("div", "bg-stone-900 border border-stone-800 rounded-2xl p-4 mb-4");
+  const linhaDatas = criarEl("div", "flex items-center gap-2 mb-3");
+  const inputIni = document.createElement("input");
+  inputIni.type = "date";
+  inputIni.className = "flex-1 bg-stone-950 border border-stone-800 rounded-lg px-2 py-2 text-xs text-stone-200";
+  const inputFim = document.createElement("input");
+  inputFim.type = "date";
+  inputFim.className = "flex-1 bg-stone-950 border border-stone-800 rounded-lg px-2 py-2 text-xs text-stone-200";
+  linhaDatas.appendChild(inputIni);
+  linhaDatas.appendChild(criarEl("span", "text-stone-600 text-xs", "até"));
+  linhaDatas.appendChild(inputFim);
+  barraFiltro.appendChild(linhaDatas);
 
-  const materiasComDados = CACHE_MATERIAS
-    .map((m) => {
-      const qs = questoesDoProjeto.filter((q) => q.materiaId === m.id);
-      const tent = qs.reduce((n, q) => n + q.srs.historico.length, 0);
-      const ac = qs.reduce((n, q) => n + q.srs.historico.filter((h) => h.acertou).length, 0);
-      return { nome: m.nome, id: m.id, tent, pct: tent ? Math.round((ac / tent) * 100) : null };
-    })
-    .filter((m) => m.tent > 0);
+  const atalhos = criarEl("div", "grid grid-cols-4 gap-1.5 mb-3");
+  function botaoAtalho(label, fn) {
+    const b = criarEl("button", "text-xs bg-stone-800 text-stone-300 rounded-lg py-1.5", label);
+    b.addEventListener("click", () => { fn(); atualizarTudo(); });
+    return b;
+  }
+  atalhos.appendChild(botaoAtalho("Hoje", () => { st.dataIni = hojeStr(); st.dataFim = hojeStr(); }));
+  atalhos.appendChild(botaoAtalho("7 dias", () => { st.dataIni = addDiasStr(hojeStr(), -7); st.dataFim = hojeStr(); }));
+  atalhos.appendChild(botaoAtalho("Este mês", () => { st.dataIni = hojeStr().slice(0, 8) + "01"; st.dataFim = hojeStr(); }));
+  atalhos.appendChild(botaoAtalho("Tudo", () => { st.dataIni = null; st.dataFim = null; }));
+  barraFiltro.appendChild(atalhos);
 
-  if (materiasComDados.length === 0) {
-    c.appendChild(criarEl("p", "text-stone-500 text-sm", "Responda algumas questões para ver as estatísticas por matéria."));
-    return c;
+  const btnFiltrar = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-lg py-2 text-sm", "Filtrar");
+  btnFiltrar.addEventListener("click", () => {
+    st.dataIni = inputIni.value || null;
+    st.dataFim = inputFim.value || null;
+    atualizarTudo();
+  });
+  barraFiltro.appendChild(btnFiltrar);
+  c.appendChild(barraFiltro);
+
+  // --- Cards de resumo + gráfico donut ---
+  const areaResumo = criarEl("div");
+  c.appendChild(areaResumo);
+
+  // --- Opções de exibição da árvore ---
+  const barraOpcoes = criarEl("div", "flex items-center justify-between mt-5 mb-2");
+  const wrapOrdenacao = document.createElement("select");
+  wrapOrdenacao.className = "bg-stone-900 border border-stone-800 rounded-lg px-2 py-1.5 text-xs text-stone-300";
+  [["indice", "Índice (edital)"], ["decrescente", "Pior desempenho primeiro"], ["crescente", "Melhor desempenho primeiro"]].forEach(([v, label]) => {
+    const opt = document.createElement("option");
+    opt.value = v; opt.textContent = label;
+    wrapOrdenacao.appendChild(opt);
+  });
+  wrapOrdenacao.addEventListener("change", () => { st.ordenacao = wrapOrdenacao.value; renderArvore(); });
+  barraOpcoes.appendChild(wrapOrdenacao);
+
+  const wrapToggles = criarEl("div", "flex items-center gap-3 text-xs text-stone-400");
+  const labelGrafico = criarEl("label", "flex items-center gap-1");
+  const checkGrafico = document.createElement("input");
+  checkGrafico.type = "checkbox"; checkGrafico.checked = true; checkGrafico.className = "accent-amber-500";
+  checkGrafico.addEventListener("change", () => { st.mostrarGrafico = checkGrafico.checked; renderArvore(); });
+  labelGrafico.appendChild(checkGrafico); labelGrafico.appendChild(document.createTextNode("Gráfico"));
+  const labelTexto = criarEl("label", "flex items-center gap-1");
+  const checkTexto = document.createElement("input");
+  checkTexto.type = "checkbox"; checkTexto.checked = true; checkTexto.className = "accent-amber-500";
+  checkTexto.addEventListener("change", () => { st.mostrarTexto = checkTexto.checked; renderArvore(); });
+  labelTexto.appendChild(checkTexto); labelTexto.appendChild(document.createTextNode("Números"));
+  wrapToggles.appendChild(labelGrafico);
+  wrapToggles.appendChild(labelTexto);
+  barraOpcoes.appendChild(wrapToggles);
+  c.appendChild(barraOpcoes);
+
+  const linhaSelecionarTodos = criarEl("label", "flex items-center gap-2 text-xs text-stone-400 mb-2");
+  const checkTodos = document.createElement("input");
+  checkTodos.type = "checkbox";
+  checkTodos.className = "accent-amber-500";
+  linhaSelecionarTodos.appendChild(checkTodos);
+  linhaSelecionarTodos.appendChild(document.createTextNode("Selecionar todos"));
+  c.appendChild(linhaSelecionarTodos);
+
+  // --- Árvore de matérias/assuntos ---
+  const areaArvore = criarEl("div", "space-y-2 mb-4");
+  c.appendChild(areaArvore);
+
+  // --- Rodapé com totais da seleção e ações ---
+  const rodape = criarEl("div", "bg-stone-900 border border-stone-800 rounded-2xl p-4 mt-4");
+  const linhaTotais = criarEl("p", "text-xs text-stone-400 mb-3");
+  rodape.appendChild(linhaTotais);
+  const linhaBotoes = criarEl("div", "grid grid-cols-1 gap-2");
+  const btnCriarCaderno = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-xl py-3 text-sm", "Criar caderno com seleção");
+  const btnExportar = criarEl("button", "w-full bg-stone-800 text-stone-300 rounded-xl py-2.5 text-sm", "Exportar dados (CSV)");
+  linhaBotoes.appendChild(btnCriarCaderno);
+  linhaBotoes.appendChild(btnExportar);
+  rodape.appendChild(linhaBotoes);
+  c.appendChild(rodape);
+
+  let arvoreAtual = {};
+
+  function atualizarTudo() {
+    arvoreAtual = calcularArvoreEstatisticas(st.dataIni, st.dataFim);
+    renderResumo();
+    renderArvore();
   }
 
-  c.appendChild(criarEl("p", "text-sm text-stone-400 mb-2", "Desempenho por matéria"));
-  const canvasMaterias = document.createElement("canvas");
-  canvasMaterias.height = 220;
-  const wrapChart = criarEl("div", "bg-stone-900 border border-stone-800 rounded-2xl p-4 mb-6");
-  wrapChart.appendChild(canvasMaterias);
-  c.appendChild(wrapChart);
-
-  const chart1 = new Chart(canvasMaterias, {
-    type: "bar",
-    data: {
-      labels: materiasComDados.map((m) => m.nome),
-      datasets: [{ label: "% de acerto", data: materiasComDados.map((m) => m.pct), backgroundColor: "#C9A24B" }],
-    },
-    options: {
-      indexAxis: "y",
-      scales: { x: { min: 0, max: 100, ticks: { color: "#9CA3AF" } }, y: { ticks: { color: "#E7E5E4", font: { size: 10 } } } },
-      plugins: { legend: { display: false } },
-    },
-  });
-  graficosAtivos.push(chart1);
-
-  c.appendChild(criarEl("p", "text-sm text-stone-400 mb-2", "Ver detalhe por assunto"));
-  const { wrap: wrapSelect, select } = campoSelectMaterias();
-  wrapSelect.querySelector("select").innerHTML = "";
-  materiasComDados.forEach((m) => {
-    const opt = document.createElement("option");
-    opt.value = m.id;
-    opt.textContent = m.nome;
-    select.appendChild(opt);
-  });
-  wrapSelect.querySelector("button")?.remove(); // sem "+ nova matéria" aqui
-  c.appendChild(wrapSelect);
-
-  const areaAssuntos = criarEl("div", "mt-4");
-  c.appendChild(areaAssuntos);
-
-  function renderAssuntos() {
-    areaAssuntos.innerHTML = "";
-    const materiaId = Number(select.value);
-    const qs = questoesDoProjeto.filter((q) => q.materiaId === materiaId);
-    const porAssunto = {};
-    qs.forEach((q) => {
-      const chave = q.assunto || "(sem assunto)";
-      if (!porAssunto[chave]) porAssunto[chave] = { tent: 0, ac: 0 };
-      porAssunto[chave].tent += q.srs.historico.length;
-      porAssunto[chave].ac += q.srs.historico.filter((h) => h.acertou).length;
+  function renderResumo() {
+    areaResumo.innerHTML = "";
+    let totalResolvidas = 0;
+    const materiasComResolucao = [];
+    Object.entries(arvoreAtual).forEach(([materiaId, m]) => {
+      totalResolvidas += m.resolvidas;
+      if (m.resolvidas > 0) materiasComResolucao.push({ id: Number(materiaId), nome: nomeMateria(Number(materiaId)), resolvidas: m.resolvidas });
     });
-    const linhas = Object.entries(porAssunto).filter(([, v]) => v.tent > 0);
-    if (linhas.length === 0) {
-      areaAssuntos.appendChild(criarEl("p", "text-stone-500 text-sm", "Sem tentativas registradas nesta matéria ainda."));
+
+    const cards = criarEl("div", "grid grid-cols-2 gap-3 mb-4");
+    cards.appendChild(statBox("Questões resolvidas", totalResolvidas.toString()));
+    cards.appendChild(statBox("Matérias estudadas", materiasComResolucao.length.toString()));
+    areaResumo.appendChild(cards);
+
+    if (materiasComResolucao.length === 0) {
+      areaResumo.appendChild(criarEl("p", "text-stone-500 text-sm", "Nenhuma questão resolvida no período selecionado."));
       return;
     }
-    const tabela = criarEl("div", "space-y-2");
-    linhas.forEach(([assunto, v]) => {
-      const pct = Math.round((v.ac / v.tent) * 100);
-      const linha = criarEl("div", "bg-stone-900 border border-stone-800 rounded-xl p-3 flex items-center justify-between");
-      linha.innerHTML = `<span class="text-sm text-stone-300">${assunto}</span><span class="text-sm font-medium ${pct >= 70 ? "text-emerald-400" : pct >= 40 ? "text-amber-400" : "text-red-400"}">${pct}%</span>`;
-      tabela.appendChild(linha);
-    });
-    areaAssuntos.appendChild(tabela);
-  }
-  select.addEventListener("change", renderAssuntos);
-  renderAssuntos();
 
+    const wrapDonut = criarEl("div", "bg-stone-900 border border-stone-800 rounded-2xl p-4 flex items-center gap-4");
+    const canvasDonut = document.createElement("canvas");
+    canvasDonut.style.maxWidth = "140px";
+    canvasDonut.style.maxHeight = "140px";
+    const wrapCanvas = criarEl("div", "flex-shrink-0");
+    wrapCanvas.style.width = "140px";
+    wrapCanvas.style.height = "140px";
+    wrapCanvas.appendChild(canvasDonut);
+    wrapDonut.appendChild(wrapCanvas);
+
+    const cores = ["#C9A24B", "#4ADE80", "#60A5FA", "#F472B6", "#FB923C", "#A78BFA", "#34D399", "#F87171", "#38BDF8", "#FACC15", "#FB7185", "#818CF8", "#2DD4BF"];
+    const legenda = criarEl("div", "flex-1 space-y-1");
+    materiasComResolucao.forEach((m, i) => {
+      const linha = criarEl("div", "flex items-center gap-1.5 text-xs text-stone-300");
+      linha.innerHTML = `<span style="width:8px;height:8px;border-radius:2px;background:${cores[i % cores.length]};display:inline-block;"></span><span class="truncate">${m.nome}</span><span class="text-stone-500 ml-auto">${m.resolvidas}</span>`;
+      legenda.appendChild(linha);
+    });
+    wrapDonut.appendChild(legenda);
+    areaResumo.appendChild(wrapDonut);
+
+    const chart = new Chart(canvasDonut, {
+      type: "doughnut",
+      data: {
+        labels: materiasComResolucao.map((m) => m.nome),
+        datasets: [{ data: materiasComResolucao.map((m) => m.resolvidas), backgroundColor: materiasComResolucao.map((_, i) => cores[i % cores.length]), borderWidth: 0 }],
+      },
+      options: { plugins: { legend: { display: false } }, cutout: "65%" },
+    });
+    graficosAtivos.push(chart);
+  }
+
+  function linhasOrdenadas(entradas, chavePct) {
+    if (st.ordenacao === "crescente") return [...entradas].sort((a, b) => chavePct(a) - chavePct(b));
+    if (st.ordenacao === "decrescente") return [...entradas].sort((a, b) => chavePct(b) - chavePct(a));
+    return entradas; // índice = ordem original
+  }
+
+  function renderArvore() {
+    areaArvore.innerHTML = "";
+    const materiasOrdenadas = linhasOrdenadas(
+      CACHE_MATERIAS.filter((m) => arvoreAtual[m.id]),
+      (m) => {
+        const d = arvoreAtual[m.id];
+        return d.resolvidas ? (d.acertos / d.resolvidas) * 100 : -1;
+      }
+    );
+
+    if (materiasOrdenadas.length === 0) {
+      areaArvore.appendChild(criarEl("p", "text-stone-500 text-sm", "Nenhum dado para exibir com os filtros atuais."));
+      atualizarRodape();
+      return;
+    }
+
+    materiasOrdenadas.forEach((materia) => {
+      const dadosMateria = arvoreAtual[materia.id];
+      const pctMateria = dadosMateria.resolvidas ? Math.round((dadosMateria.acertos / dadosMateria.resolvidas) * 100) : null;
+      const assuntosEntradas = Object.entries(dadosMateria.assuntos);
+      const assuntosOrdenados = linhasOrdenadas(assuntosEntradas, ([, a]) => (a.resolvidas ? (a.acertos / a.resolvidas) * 100 : -1));
+      const todosAssuntosSelecionados = assuntosEntradas.every(([assunto]) => st.selecionados.has(`${materia.id}|${assunto}`));
+
+      const card = criarEl("div", "bg-stone-900 border border-stone-800 rounded-xl overflow-hidden");
+
+      const cabecaMateria = criarEl("div", "flex items-center gap-2 p-3 cursor-pointer");
+      const checkMateria = document.createElement("input");
+      checkMateria.type = "checkbox";
+      checkMateria.className = "accent-amber-500 flex-shrink-0";
+      checkMateria.checked = todosAssuntosSelecionados;
+      checkMateria.addEventListener("click", (e) => e.stopPropagation());
+      checkMateria.addEventListener("change", () => {
+        assuntosEntradas.forEach(([assunto]) => {
+          const chave = `${materia.id}|${assunto}`;
+          if (checkMateria.checked) st.selecionados.add(chave); else st.selecionados.delete(chave);
+        });
+        renderArvore();
+      });
+      cabecaMateria.appendChild(checkMateria);
+
+      const seta = criarEl("span", "text-stone-500 text-xs flex-shrink-0", st.expandido.has(materia.id) ? "▼" : "▶");
+      cabecaMateria.appendChild(seta);
+
+      const infoMateria = criarEl("div", "flex-1 min-w-0");
+      infoMateria.appendChild(criarEl("p", "text-sm text-stone-100 truncate", materia.nome));
+      cabecaMateria.appendChild(infoMateria);
+
+      if (st.mostrarTexto) {
+        cabecaMateria.appendChild(criarEl("span", "text-xs text-stone-500 flex-shrink-0", `${dadosMateria.resolvidas}`));
+      }
+      if (pctMateria !== null) {
+        const corPct = pctMateria >= 70 ? "text-emerald-400" : pctMateria >= 40 ? "text-amber-400" : "text-red-400";
+        cabecaMateria.appendChild(criarEl("span", `text-xs font-medium flex-shrink-0 w-10 text-right ${corPct}`, `${pctMateria}%`));
+      } else {
+        cabecaMateria.appendChild(criarEl("span", "text-xs text-stone-600 flex-shrink-0 w-10 text-right", "—"));
+      }
+      cabecaMateria.addEventListener("click", () => {
+        if (st.expandido.has(materia.id)) st.expandido.delete(materia.id); else st.expandido.add(materia.id);
+        renderArvore();
+      });
+      card.appendChild(cabecaMateria);
+
+      if (st.mostrarGrafico && dadosMateria.resolvidas > 0) {
+        const barraWrap = criarEl("div", "px-3 pb-2");
+        const barraFundo = criarEl("div", "w-full h-1.5 bg-stone-800 rounded-full overflow-hidden");
+        const barraPreenchida = criarEl("div", `h-full ${pctMateria >= 70 ? "bg-emerald-500" : pctMateria >= 40 ? "bg-amber-500" : "bg-red-500"}`);
+        barraPreenchida.style.width = `${pctMateria}%`;
+        barraFundo.appendChild(barraPreenchida);
+        barraWrap.appendChild(barraFundo);
+        card.appendChild(barraWrap);
+      }
+
+      if (st.expandido.has(materia.id)) {
+        const listaAssuntos = criarEl("div", "border-t border-stone-800 divide-y divide-stone-800");
+        assuntosOrdenados.forEach(([assunto, dadosAssunto]) => {
+          const pctAssunto = dadosAssunto.resolvidas ? Math.round((dadosAssunto.acertos / dadosAssunto.resolvidas) * 100) : null;
+          const chave = `${materia.id}|${assunto}`;
+          const linha = criarEl("div", "flex items-center gap-2 p-3 pl-8");
+          const checkAssunto = document.createElement("input");
+          checkAssunto.type = "checkbox";
+          checkAssunto.className = "accent-amber-500 flex-shrink-0";
+          checkAssunto.checked = st.selecionados.has(chave);
+          checkAssunto.addEventListener("change", () => {
+            if (checkAssunto.checked) st.selecionados.add(chave); else st.selecionados.delete(chave);
+            renderArvore();
+          });
+          linha.appendChild(checkAssunto);
+          linha.appendChild(criarEl("p", "flex-1 min-w-0 text-xs text-stone-300 truncate", assunto));
+          if (st.mostrarTexto) linha.appendChild(criarEl("span", "text-xs text-stone-500 flex-shrink-0", `${dadosAssunto.resolvidas}`));
+          if (pctAssunto !== null) {
+            const corA = pctAssunto >= 70 ? "text-emerald-400" : pctAssunto >= 40 ? "text-amber-400" : "text-red-400";
+            linha.appendChild(criarEl("span", `text-xs font-medium flex-shrink-0 w-10 text-right ${corA}`, `${pctAssunto}%`));
+          } else {
+            linha.appendChild(criarEl("span", "text-xs text-stone-600 flex-shrink-0 w-10 text-right", "—"));
+          }
+          listaAssuntos.appendChild(linha);
+        });
+        card.appendChild(listaAssuntos);
+      }
+
+      areaArvore.appendChild(card);
+    });
+
+    checkTodos.checked = [...st.selecionados].length > 0 && CACHE_MATERIAS.every((m) => {
+      const d = arvoreAtual[m.id];
+      if (!d) return true;
+      return Object.keys(d.assuntos).every((assunto) => st.selecionados.has(`${m.id}|${assunto}`));
+    });
+
+    atualizarRodape();
+  }
+
+  function atualizarRodape() {
+    let resolvidas = 0, acertos = 0;
+    st.selecionados.forEach((chave) => {
+      const [materiaId, assunto] = chave.split("|");
+      const d = arvoreAtual[Number(materiaId)];
+      const a = d && d.assuntos[assunto];
+      if (a) { resolvidas += a.resolvidas; acertos += a.acertos; }
+    });
+    const erros = resolvidas - acertos;
+    const pct = resolvidas ? Math.round((acertos / resolvidas) * 100) : 0;
+    linhaTotais.textContent = `Seleção → Resolvidas: ${resolvidas} · Acertos: ${acertos} · Erros: ${erros} · Aproveitamento: ${resolvidas ? pct + "%" : "—"}`;
+    const semSelecao = st.selecionados.size === 0;
+    btnCriarCaderno.disabled = semSelecao;
+    btnCriarCaderno.classList.toggle("opacity-50", semSelecao);
+  }
+
+  checkTodos.addEventListener("change", () => {
+    if (checkTodos.checked) {
+      Object.entries(arvoreAtual).forEach(([materiaId, m]) => {
+        Object.keys(m.assuntos).forEach((assunto) => st.selecionados.add(`${materiaId}|${assunto}`));
+      });
+    } else {
+      st.selecionados.clear();
+    }
+    renderArvore();
+  });
+
+  btnCriarCaderno.addEventListener("click", () => {
+    const idsQuestoes = new Set();
+    st.selecionados.forEach((chave) => {
+      const [materiaId, assunto] = chave.split("|");
+      const d = arvoreAtual[Number(materiaId)];
+      const a = d && d.assuntos[assunto];
+      if (a) a.idsQuestoes.forEach((id) => idsQuestoes.add(id));
+    });
+    if (idsQuestoes.size === 0) return;
+    iniciarSessao([...idsQuestoes]);
+  });
+
+  btnExportar.addEventListener("click", () => {
+    const linhas = [["Matéria", "Assunto", "Resolvidas", "Acertos", "Erros", "Aproveitamento (%)"]];
+    Object.entries(arvoreAtual).forEach(([materiaId, m]) => {
+      Object.entries(m.assuntos).forEach(([assunto, a]) => {
+        const pct = a.resolvidas ? Math.round((a.acertos / a.resolvidas) * 100) : "";
+        linhas.push([nomeMateria(Number(materiaId)), assunto, a.resolvidas, a.acertos, a.resolvidas - a.acertos, pct]);
+      });
+    });
+    const csv = linhas.map((l) => l.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(";")).join("\n");
+    const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `estatisticas-${hojeStr()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  atualizarTudo();
   return c;
 }
 

@@ -66,7 +66,14 @@ function iniciarEscutaNuvem(uid) {
   const ref = firebaseDb.collection("usuarios").doc(uid);
   pararEscutaNuvem = ref.onSnapshot(async (snap) => {
     const dados = snap.data();
-    if (!dados) return; // ainda não existe nada na nuvem pra esse usuário
+    if (!dados) {
+      // Nada na nuvem ainda: se este aparelho já tem questões, envia agora
+      // (sem isso, dados criados ANTES do login nunca subiam sozinhos).
+      if (CACHE_QUESTOES.length > 0 || CACHE_MATERIAS.length > 0) {
+        await enviarParaNuvem();
+      }
+      return;
+    }
     if ((dados.atualizadoEm || 0) > ultimoTimestampSincronizado) {
       await Store.substituirTudoLocal(dados.materias || [], dados.questoes || [], dados.projetos || []);
       ultimoTimestampSincronizado = dados.atualizadoEm;

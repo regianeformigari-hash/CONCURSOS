@@ -753,6 +753,7 @@ function renderizar() {
     estatisticas: telaEstatisticas,
     backup: telaBackup,
     gerenciar: telaGerenciar,
+    gerenciarAssuntos: telaGerenciarAssuntos,
     auditor: telaAuditor,
     projetos: telaProjetos,
   };
@@ -2031,8 +2032,64 @@ function telaGerenciar() {
     return c;
   }
 
+  const btnAssuntos = criarEl("button", "w-full bg-stone-900 border border-stone-800 text-stone-300 rounded-xl py-2.5 text-sm mb-4", "🏷️ Gerenciar assuntos (renomear / excluir em lote)");
+  btnAssuntos.addEventListener("click", () => ir("gerenciarAssuntos"));
+  c.appendChild(btnAssuntos);
+
+  // --- Filtros ---
+  const filtros = criarEl("div", "flex gap-2 mb-4");
+  const selectMateriaFiltro = document.createElement("select");
+  selectMateriaFiltro.className = "flex-1 bg-stone-900 border border-stone-800 rounded-lg px-2 py-2 text-xs text-stone-200";
+  const optTodasMaterias = document.createElement("option");
+  optTodasMaterias.value = ""; optTodasMaterias.textContent = "Todas as matérias";
+  selectMateriaFiltro.appendChild(optTodasMaterias);
+  CACHE_MATERIAS.forEach((m) => {
+    const opt = document.createElement("option");
+    opt.value = m.id; opt.textContent = m.nome;
+    selectMateriaFiltro.appendChild(opt);
+  });
+  const selectAssuntoFiltro = document.createElement("select");
+  selectAssuntoFiltro.className = "flex-1 bg-stone-900 border border-stone-800 rounded-lg px-2 py-2 text-xs text-stone-200";
+  filtros.appendChild(selectMateriaFiltro);
+  filtros.appendChild(selectAssuntoFiltro);
+  c.appendChild(filtros);
+
+  function preencherAssuntos() {
+    selectAssuntoFiltro.innerHTML = "";
+    const optTodos = document.createElement("option");
+    optTodos.value = ""; optTodos.textContent = "Todos os assuntos";
+    selectAssuntoFiltro.appendChild(optTodos);
+    const materiaId = selectMateriaFiltro.value ? Number(selectMateriaFiltro.value) : null;
+    const assuntos = [...new Set(
+      CACHE_QUESTOES.filter((q) => !materiaId || q.materiaId === materiaId).map((q) => q.assunto || "(sem assunto)")
+    )].sort();
+    assuntos.forEach((a) => {
+      const opt = document.createElement("option");
+      opt.value = a; opt.textContent = a;
+      selectAssuntoFiltro.appendChild(opt);
+    });
+  }
+  preencherAssuntos();
+
   const lista = criarEl("div", "space-y-3");
-  [...CACHE_QUESTOES].reverse().forEach((q) => {
+  c.appendChild(lista);
+
+  function renderLista() {
+    lista.innerHTML = "";
+    const materiaId = selectMateriaFiltro.value ? Number(selectMateriaFiltro.value) : null;
+    const assunto = selectAssuntoFiltro.value;
+    const questoesFiltradas = [...CACHE_QUESTOES].reverse().filter((q) => {
+      if (materiaId && q.materiaId !== materiaId) return false;
+      if (assunto && (q.assunto || "(sem assunto)") !== assunto) return false;
+      return true;
+    });
+
+    if (questoesFiltradas.length === 0) {
+      lista.appendChild(criarEl("p", "text-stone-500 text-sm", "Nenhuma questão encontrada com esses filtros."));
+      return;
+    }
+
+    questoesFiltradas.forEach((q) => {
     const card = criarEl("div", "bg-stone-900 border border-stone-800 rounded-xl p-4");
     const topo = criarEl("div", "flex items-center justify-between mb-2");
     const tags = criarEl("div", "flex items-center gap-2 flex-wrap");
@@ -2057,6 +2114,7 @@ function telaGerenciar() {
     card.appendChild(topo);
 
     const corpo = criarEl("div");
+    corpo.appendChild(criarEl("p", "text-xs text-stone-600 mb-1", q.assunto || "(sem assunto)"));
     corpo.appendChild(criarEl("p", "text-sm text-stone-300 font-serif leading-relaxed mb-1", q.enunciado));
     corpo.appendChild(criarEl("p", "text-xs text-stone-600", `Acertos seguidos: ${q.srs.acertosSeguidos} · Próxima: ${formatarDataBR(q.srs.proximaRevisaoData)}`));
     card.appendChild(corpo);
@@ -2075,8 +2133,122 @@ function telaGerenciar() {
     card.appendChild(areaEdicao);
 
     lista.appendChild(card);
-  });
-  c.appendChild(lista);
+    });
+  }
+
+  selectMateriaFiltro.addEventListener("change", () => { preencherAssuntos(); renderLista(); });
+  selectAssuntoFiltro.addEventListener("change", renderLista);
+  renderLista();
+
+  return c;
+}
+
+// ---- GERENCIAR ASSUNTOS (renomear/excluir em lote) ----
+function telaGerenciarAssuntos() {
+  const c = criarEl("div", "max-w-md mx-auto px-5 pt-8 pb-24");
+  c.appendChild(cabecalho("Gerenciar assuntos", "Renomeie ou exclua um assunto inteiro de uma vez"));
+
+  const { wrap: wrapMateria, select: selectMateria } = campoSelectMaterias();
+  const botaoExtra = wrapMateria.querySelector("button");
+  if (botaoExtra) botaoExtra.remove();
+  c.appendChild(wrapMateria);
+
+  const areaLista = criarEl("div", "space-y-3 mt-4");
+  c.appendChild(areaLista);
+
+  function renderAssuntos() {
+    areaLista.innerHTML = "";
+    const materiaId = Number(selectMateria.value);
+    const mapa = {};
+    CACHE_QUESTOES.filter((q) => q.materiaId === materiaId).forEach((q) => {
+      const chave = q.assunto || "(sem assunto)";
+      if (!mapa[chave]) mapa[chave] = [];
+      mapa[chave].push(q);
+    });
+    const assuntos = Object.keys(mapa).sort();
+
+    if (assuntos.length === 0) {
+      areaLista.appendChild(criarEl("p", "text-stone-500 text-sm", "Nenhum assunto cadastrado nessa matéria ainda."));
+      return;
+    }
+
+    assuntos.forEach((nomeAssunto) => {
+      const questoesDoAssunto = mapa[nomeAssunto];
+      const card = criarEl("div", "bg-stone-900 border border-stone-800 rounded-xl p-4");
+      const topo = criarEl("div", "flex items-center justify-between mb-2");
+      topo.appendChild(criarEl("p", "text-stone-100 text-sm", nomeAssunto));
+      topo.appendChild(criarEl("span", "text-xs text-stone-500", `${questoesDoAssunto.length} questão(ões)`));
+      card.appendChild(topo);
+
+      const acoes = criarEl("div", "flex gap-2");
+      const btnRenomear = criarEl("button", "flex-1 bg-stone-800 text-stone-300 rounded-lg py-2 text-xs", "✏️ Renomear");
+      const btnExcluir = criarEl("button", "flex-1 bg-red-500/10 text-red-400 rounded-lg py-2 text-xs", "🗑️ Excluir");
+      acoes.appendChild(btnRenomear);
+      acoes.appendChild(btnExcluir);
+      card.appendChild(acoes);
+
+      const areaAcao = criarEl("div", "mt-3 hidden");
+      card.appendChild(areaAcao);
+
+      btnRenomear.addEventListener("click", () => {
+        const estaAberto = !areaAcao.classList.contains("hidden") && areaAcao.dataset.modo === "renomear";
+        areaAcao.innerHTML = "";
+        if (estaAberto) { areaAcao.classList.add("hidden"); areaAcao.dataset.modo = ""; return; }
+        areaAcao.classList.remove("hidden");
+        areaAcao.dataset.modo = "renomear";
+        const { wrap, input } = campoInput("Novo nome do assunto", "");
+        input.value = nomeAssunto;
+        areaAcao.appendChild(wrap);
+        const btnConfirmar = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-lg py-2 text-sm mt-2", "Salvar novo nome");
+        btnConfirmar.addEventListener("click", async () => {
+          const novoNome = input.value.trim();
+          if (!novoNome || novoNome === nomeAssunto) return;
+          for (const q of questoesDoAssunto) {
+            q.assunto = novoNome;
+            await salvarQuestao(q);
+          }
+          await carregarTudo();
+          renderAssuntos();
+        });
+        areaAcao.appendChild(btnConfirmar);
+      });
+
+      btnExcluir.addEventListener("click", () => {
+        const estaAberto = !areaAcao.classList.contains("hidden") && areaAcao.dataset.modo === "excluir";
+        areaAcao.innerHTML = "";
+        if (estaAberto) { areaAcao.classList.add("hidden"); areaAcao.dataset.modo = ""; return; }
+        areaAcao.classList.remove("hidden");
+        areaAcao.dataset.modo = "excluir";
+        areaAcao.appendChild(criarEl("p", "text-xs text-stone-400 mb-2", "O que você quer fazer com as questões desse assunto?"));
+        const btnRemoverRotulo = criarEl("button", "w-full bg-stone-800 text-stone-300 rounded-lg py-2 text-xs mb-2", "Remover só o rótulo (mantém as questões, sem assunto)");
+        const btnExcluirTudo = criarEl("button", "w-full bg-red-500 text-stone-950 font-medium rounded-lg py-2 text-xs", "Excluir também as questões");
+        btnRemoverRotulo.addEventListener("click", async () => {
+          for (const q of questoesDoAssunto) {
+            q.assunto = "";
+            await salvarQuestao(q);
+          }
+          await carregarTudo();
+          renderAssuntos();
+        });
+        btnExcluirTudo.addEventListener("click", async () => {
+          if (!confirm(`Excluir ${questoesDoAssunto.length} questão(ões) do assunto "${nomeAssunto}"? Isso não pode ser desfeito.`)) return;
+          for (const q of questoesDoAssunto) {
+            await Store.deleteQuestao(q.id);
+          }
+          await carregarTudo();
+          renderAssuntos();
+        });
+        areaAcao.appendChild(btnRemoverRotulo);
+        areaAcao.appendChild(btnExcluirTudo);
+      });
+
+      areaLista.appendChild(card);
+    });
+  }
+
+  selectMateria.addEventListener("change", renderAssuntos);
+  renderAssuntos();
+
   return c;
 }
 

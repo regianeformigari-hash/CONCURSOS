@@ -48,6 +48,9 @@ function configurarFirebase() {
 }
 
 async function entrarComGoogle() {
+  if (window.location.protocol === "file:") {
+    return { erro: "Isso só funciona pelo link do site (não abrindo o arquivo direto do computador). Acesse https://regianeformigari-hash.github.io/CONCURSOS/ e tente de novo por lá." };
+  }
   if (!firebaseAuth) return { erro: "Firebase não carregou (verifique sua internet)." };
   try {
     const provider = new firebase.auth.GoogleAuthProvider();
@@ -756,6 +759,7 @@ function renderizar() {
     gerenciarAssuntos: telaGerenciarAssuntos,
     auditor: telaAuditor,
     projetos: telaProjetos,
+    pendentes: telaPendentes,
   };
   const fn = telas[estado.tela] || telaHome;
   app.appendChild(fn());
@@ -833,7 +837,7 @@ function telaHome() {
       <span class="text-amber-500/70 text-2xl">›</span>
     </div>`;
   if (pendentes.length === 0) cardPendentes.classList.add("opacity-50");
-  else cardPendentes.addEventListener("click", () => iniciarSessao(pendentes.map((q) => q.id)));
+  else cardPendentes.addEventListener("click", () => ir("pendentes"));
   c.appendChild(cardPendentes);
 
   const cardMaterias = criarEl("button", "w-full text-left bg-stone-900 border border-stone-800 rounded-2xl p-5 mb-4 flex items-center justify-between");
@@ -1101,6 +1105,44 @@ function telaManual() {
 }
 
 // ---- MATÉRIAS ----
+// ---- REVISÕES PENDENTES (com filtro por matéria) ----
+function telaPendentes() {
+  const c = criarEl("div", "max-w-md mx-auto px-5 pt-8 pb-24");
+  c.appendChild(cabecalho("Revisões pendentes de hoje"));
+
+  const questoesDoProjeto = filtrarPorProjetoAtivo(CACHE_QUESTOES);
+  const pendentesTotal = questoesDoProjeto.filter(estaPendenteHoje);
+
+  if (pendentesTotal.length === 0) {
+    c.appendChild(criarEl("p", "text-stone-500 text-sm", "Nenhuma revisão pendente por aqui. 🎉"));
+    return c;
+  }
+
+  const btnTodas = criarEl("button", "w-full text-left bg-amber-500 text-stone-950 rounded-2xl p-5 mb-4 flex items-center justify-between");
+  btnTodas.innerHTML = `<span class="font-medium">Revisar todas juntas</span><span class="font-serif text-xl">${pendentesTotal.length}</span>`;
+  btnTodas.addEventListener("click", () => iniciarSessao(pendentesTotal.map((q) => q.id)));
+  c.appendChild(btnTodas);
+
+  c.appendChild(criarEl("p", "text-xs text-stone-500 mb-2", "Ou escolha uma matéria específica:"));
+
+  const porMateria = {};
+  pendentesTotal.forEach((q) => {
+    if (!porMateria[q.materiaId]) porMateria[q.materiaId] = [];
+    porMateria[q.materiaId].push(q);
+  });
+
+  const lista = criarEl("div", "space-y-2");
+  CACHE_MATERIAS.filter((m) => porMateria[m.id]).forEach((m) => {
+    const qs = porMateria[m.id];
+    const card = criarEl("button", "w-full text-left bg-stone-900 border border-stone-800 rounded-xl p-4 flex items-center justify-between");
+    card.innerHTML = `<span class="text-stone-100 text-sm">${m.nome}</span><span class="text-amber-400 font-serif">${qs.length}</span>`;
+    card.addEventListener("click", () => iniciarSessao(qs.map((q) => q.id)));
+    lista.appendChild(card);
+  });
+  c.appendChild(lista);
+  return c;
+}
+
 function telaMaterias() {
   const c = criarEl("div", "max-w-md mx-auto px-5 pt-8 pb-24");
   c.appendChild(cabecalho("Treinar por matéria", PROJETO_ATIVO_ID ? `Filtrando pelo projeto: ${nomeProjeto(PROJETO_ATIVO_ID)}` : null));
@@ -1143,7 +1185,8 @@ function telaSessao() {
   fechar.addEventListener("click", () => { sessaoAtual = null; ir("home"); });
   topo.appendChild(fechar);
   topo.appendChild(criarEl("p", "text-xs text-stone-500", `${sessaoAtual.pos + 1} / ${sessaoAtual.total}`));
-  topo.appendChild(criarEl("span", "w-5"));
+  const btnEditarQuestao = criarEl("button", "text-xs text-amber-400/90", "✏️ Editar");
+  topo.appendChild(btnEditarQuestao);
   c.appendChild(topo);
 
   const barra = criarEl("div", "w-full h-1 bg-stone-800 rounded-full mb-8");
@@ -1155,9 +1198,28 @@ function telaSessao() {
   c.appendChild(criarEl("p", "text-xs text-amber-500/80 mb-1", nomeMateria(questao.materiaId)));
   c.appendChild(criarEl("p", "text-xs text-stone-600 mb-3", questao.assunto || ""));
 
-  const cardQuestao = criarEl("div", "bg-stone-900 border border-stone-800 rounded-2xl p-5 mb-6");
+  const cardQuestao = criarEl("div", "bg-stone-900 border border-stone-800 rounded-2xl p-5 mb-4");
   cardQuestao.appendChild(criarEl("p", "font-serif text-lg text-stone-100 leading-relaxed", questao.enunciado));
   c.appendChild(cardQuestao);
+
+  const areaEdicaoSessao = criarEl("div", "hidden bg-stone-900 border border-amber-500/30 rounded-2xl p-4 mb-6 space-y-2");
+  let edicaoSessaoMontada = false;
+  btnEditarQuestao.addEventListener("click", () => {
+    const abrindo = areaEdicaoSessao.classList.contains("hidden");
+    areaEdicaoSessao.classList.toggle("hidden");
+    if (abrindo && !edicaoSessaoMontada) {
+      montarEdicao(questao, areaEdicaoSessao, () => {
+        carregarTudo().then(() => {
+          areaEdicaoSessao.classList.add("hidden");
+          edicaoSessaoMontada = false;
+          renderizar();
+        });
+      });
+      edicaoSessaoMontada = true;
+    }
+    btnEditarQuestao.textContent = abrindo ? "Fechar edição" : "✏️ Editar";
+  });
+  c.appendChild(areaEdicaoSessao);
 
   const areaResposta = criarEl("div", "space-y-3 flex-1");
 

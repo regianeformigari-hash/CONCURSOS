@@ -32,6 +32,8 @@ function configurarFirebase() {
     firebaseApp = firebase.initializeApp(firebaseConfig);
     firebaseAuth = firebase.auth();
     firebaseDb = firebase.firestore();
+    // Conclui o login caso a página tenha acabado de voltar de um redirecionamento do Google
+    firebaseAuth.getRedirectResult().catch((e) => console.warn("Erro ao concluir login:", e));
     firebaseAuth.onAuthStateChanged((user) => {
       if (user) {
         usuarioLogado = { uid: user.uid, email: user.email, nome: user.displayName };
@@ -54,8 +56,8 @@ async function entrarComGoogle() {
   if (!firebaseAuth) return { erro: "Firebase não carregou (verifique sua internet)." };
   try {
     const provider = new firebase.auth.GoogleAuthProvider();
-    await firebaseAuth.signInWithPopup(provider);
-    return { ok: true };
+    await firebaseAuth.signInWithRedirect(provider);
+    return { ok: true }; // a página vai recarregar sozinha após escolher a conta
   } catch (e) {
     return { erro: e.message || "Não foi possível entrar." };
   }
@@ -661,6 +663,39 @@ function campoInput(label, placeholder, value = "") {
   wrap.appendChild(input);
   return { wrap, input };
 }
+
+// Campo de assunto com sugestões (autocompletar) dos assuntos já usados na
+// matéria selecionada. Digitar um nome novo cria um assunto novo normalmente.
+function campoAssuntoComSugestoes(selectMateria) {
+  const wrap = criarEl("div");
+  wrap.appendChild(criarEl("label", "block text-sm text-stone-400 mb-1.5", "Assunto / subtópico"));
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "Digite ou escolha um já existente...";
+  const listId = `assuntos-sugeridos-${Math.random().toString(36).slice(2, 8)}`;
+  input.setAttribute("list", listId);
+  input.className = "w-full bg-stone-900 border border-stone-800 rounded-xl px-4 py-3 text-stone-100 placeholder-stone-600 outline-none focus:border-amber-500/60";
+  const datalist = document.createElement("datalist");
+  datalist.id = listId;
+  wrap.appendChild(input);
+  wrap.appendChild(datalist);
+
+  function atualizarSugestoes() {
+    datalist.innerHTML = "";
+    const materiaId = Number(selectMateria.value);
+    const assuntos = [...new Set(CACHE_QUESTOES.filter((q) => q.materiaId === materiaId).map((q) => q.assunto).filter(Boolean))].sort();
+    assuntos.forEach((a) => {
+      const opt = document.createElement("option");
+      opt.value = a;
+      datalist.appendChild(opt);
+    });
+  }
+  atualizarSugestoes();
+  selectMateria.addEventListener("change", atualizarSugestoes);
+
+  return { wrap, input };
+}
+
 function campoTextarea(label, placeholder, rows = 6) {
   const wrap = criarEl("div");
   wrap.appendChild(criarEl("label", "block text-sm text-stone-400 mb-1.5", label));
@@ -894,7 +929,7 @@ function telaImportar() {
   const { wrap: wrapMateria, select: selectMateria } = campoSelectMaterias();
   form.appendChild(wrapMateria);
 
-  const { wrap: wrapAssunto, input: inputAssunto } = campoInput("Assunto / subtópico", 'Ex: "Crimes contra a Administração — Art. 312 a 327"');
+  const { wrap: wrapAssunto, input: inputAssunto } = campoAssuntoComSugestoes(selectMateria);
   form.appendChild(wrapAssunto);
 
   const { wrap: wrapProjetos, getSelecionados: getProjetosSelecionados } = campoSelecaoProjetos();
@@ -1000,7 +1035,7 @@ function telaManual() {
   const form = criarEl("div", "space-y-4");
   const { wrap: wrapMateria, select: selectMateria } = campoSelectMaterias();
   form.appendChild(wrapMateria);
-  const { wrap: wrapAssunto, input: inputAssunto } = campoInput("Assunto / subtópico", "Ex: Direitos e Garantias Fundamentais — Art. 5º");
+  const { wrap: wrapAssunto, input: inputAssunto } = campoAssuntoComSugestoes(selectMateria);
   form.appendChild(wrapAssunto);
 
   let tipoSelecionado = "CE";
@@ -1132,12 +1167,57 @@ function telaPendentes() {
   });
 
   const lista = criarEl("div", "space-y-2");
+  const expandidos = new Set();
   CACHE_MATERIAS.filter((m) => porMateria[m.id]).forEach((m) => {
     const qs = porMateria[m.id];
-    const card = criarEl("button", "w-full text-left bg-stone-900 border border-stone-800 rounded-xl p-4 flex items-center justify-between");
-    card.innerHTML = `<span class="text-stone-100 text-sm">${m.nome}</span><span class="text-amber-400 font-serif">${qs.length}</span>`;
-    card.addEventListener("click", () => iniciarSessao(qs.map((q) => q.id)));
-    lista.appendChild(card);
+    const porAssunto = {};
+    qs.forEach((q) => {
+      const chave = q.assunto || "(sem assunto)";
+      if (!porAssunto[chave]) porAssunto[chave] = [];
+      porAssunto[chave].push(q);
+    });
+    const assuntos = Object.keys(porAssunto).sort();
+
+    const cardWrap = criarEl("div", "bg-stone-900 border border-stone-800 rounded-xl overflow-hidden");
+    const card = criarEl("button", "w-full text-left p-4 flex items-center justify-between");
+    const ladoEsq = criarEl("div", "flex items-center gap-2");
+    const seta = criarEl("span", "text-stone-500 text-xs", "▶");
+    ladoEsq.appendChild(seta);
+    ladoEsq.appendChild(criarEl("span", "text-stone-100 text-sm", m.nome));
+    card.appendChild(ladoEsq);
+    card.appendChild(criarEl("span", "text-amber-400 font-serif", qs.length.toString()));
+
+    const areaAssuntos = criarEl("div", "hidden border-t border-stone-800 divide-y divide-stone-800");
+    assuntos.forEach((nomeAssunto) => {
+      const qsAssunto = porAssunto[nomeAssunto];
+      const linha = criarEl("button", "w-full text-left flex items-center justify-between px-4 py-3 pl-8");
+      linha.innerHTML = `<span class="text-xs text-stone-300 truncate">${nomeAssunto}</span><span class="text-xs text-amber-400 flex-shrink-0 ml-2">${qsAssunto.length}</span>`;
+      linha.addEventListener("click", (e) => {
+        e.stopPropagation();
+        iniciarSessao(qsAssunto.map((q) => q.id));
+      });
+      areaAssuntos.appendChild(linha);
+    });
+
+    card.addEventListener("click", () => {
+      if (expandidos.has(m.id)) {
+        expandidos.delete(m.id);
+        areaAssuntos.classList.add("hidden");
+        seta.textContent = "▶";
+      } else {
+        expandidos.add(m.id);
+        areaAssuntos.classList.remove("hidden");
+        seta.textContent = "▼";
+      }
+    });
+
+    const btnTreinarTudo = criarEl("button", "w-full text-left px-4 pb-3 text-xs text-amber-400/90", "Revisar toda a matéria →");
+    btnTreinarTudo.addEventListener("click", (e) => { e.stopPropagation(); iniciarSessao(qs.map((q) => q.id)); });
+
+    cardWrap.appendChild(card);
+    cardWrap.appendChild(areaAssuntos);
+    if (assuntos.length > 1) cardWrap.appendChild(btnTreinarTudo);
+    lista.appendChild(cardWrap);
   });
   c.appendChild(lista);
   return c;
@@ -1186,7 +1266,11 @@ function telaSessao() {
   topo.appendChild(fechar);
   topo.appendChild(criarEl("p", "text-xs text-stone-500", `${sessaoAtual.pos + 1} / ${sessaoAtual.total}`));
   const btnEditarQuestao = criarEl("button", "text-xs text-amber-400/90", "✏️ Editar");
-  topo.appendChild(btnEditarQuestao);
+  const btnExcluirQuestao = criarEl("button", "text-xs text-red-400/80", "🗑️");
+  const wrapBotoesTopo = criarEl("div", "flex items-center gap-3");
+  wrapBotoesTopo.appendChild(btnEditarQuestao);
+  wrapBotoesTopo.appendChild(btnExcluirQuestao);
+  topo.appendChild(wrapBotoesTopo);
   c.appendChild(topo);
 
   const barra = criarEl("div", "w-full h-1 bg-stone-800 rounded-full mb-8");
@@ -1220,6 +1304,18 @@ function telaSessao() {
     btnEditarQuestao.textContent = abrindo ? "Fechar edição" : "✏️ Editar";
   });
   c.appendChild(areaEdicaoSessao);
+
+  btnExcluirQuestao.addEventListener("click", async () => {
+    if (!confirm("Excluir esta questão do banco? Essa ação não pode ser desfeita.")) return;
+    await Store.deleteQuestao(questao.id);
+    await carregarTudo();
+    const idx = sessaoAtual.fila.indexOf(questao.id);
+    if (idx !== -1) sessaoAtual.fila.splice(idx, 1);
+    sessaoAtual.total = sessaoAtual.fila.length;
+    sessaoAtual.respondida = false;
+    sessaoAtual.alternativasEmbaralhadas = null;
+    renderizar();
+  });
 
   const areaResposta = criarEl("div", "space-y-3 flex-1");
 

@@ -1296,6 +1296,8 @@ function telaSessao() {
         carregarTudo().then(() => {
           areaEdicaoSessao.classList.add("hidden");
           edicaoSessaoMontada = false;
+          sessaoAtual.alternativasEmbaralhadas = null;
+          sessaoAtual.eliminadas = null;
           renderizar();
         });
       });
@@ -1314,6 +1316,7 @@ function telaSessao() {
     sessaoAtual.total = sessaoAtual.fila.length;
     sessaoAtual.respondida = false;
     sessaoAtual.alternativasEmbaralhadas = null;
+    sessaoAtual.eliminadas = null;
     renderizar();
   });
 
@@ -1336,12 +1339,36 @@ function telaSessao() {
     if (!sessaoAtual.alternativasEmbaralhadas) {
       sessaoAtual.alternativasEmbaralhadas = [...questao.alternativas].sort(() => Math.random() - 0.5);
     }
+    if (!sessaoAtual.eliminadas) sessaoAtual.eliminadas = new Set();
     if (!sessaoAtual.respondida) {
       const lista = criarEl("div", "space-y-2");
-      sessaoAtual.alternativasEmbaralhadas.forEach((alt) => {
-        const btn = criarEl("button", "w-full text-left bg-stone-900 border border-stone-800 rounded-xl px-4 py-3 text-stone-200 active:scale-[0.99] transition", alt.texto);
+      sessaoAtual.alternativasEmbaralhadas.forEach((alt, idx) => {
+        const riscada = sessaoAtual.eliminadas.has(idx);
+        const linha = criarEl("div", "flex items-stretch gap-2");
+
+        const btn = criarEl(
+          "button",
+          `flex-1 text-left rounded-xl px-4 py-3 transition active:scale-[0.99] ${riscada ? "bg-stone-900/40 border border-stone-800/60 text-stone-600 line-through" : "bg-stone-900 border border-stone-800 text-stone-200"}`,
+          alt.texto
+        );
         btn.addEventListener("click", () => responderMC(questao, alt));
-        lista.appendChild(btn);
+
+        const btnTesoura = criarEl(
+          "button",
+          `flex-shrink-0 w-11 rounded-xl border text-lg flex items-center justify-center transition ${riscada ? "bg-amber-500/15 border-amber-500/40" : "bg-stone-900 border-stone-800"}`,
+          "✂️"
+        );
+        btnTesoura.title = "Marcar/desmarcar como eliminada";
+        btnTesoura.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (sessaoAtual.eliminadas.has(idx)) sessaoAtual.eliminadas.delete(idx);
+          else sessaoAtual.eliminadas.add(idx);
+          renderizar();
+        });
+
+        linha.appendChild(btn);
+        linha.appendChild(btnTesoura);
+        lista.appendChild(linha);
       });
       areaResposta.appendChild(lista);
     } else {
@@ -1415,6 +1442,7 @@ function btnProximaSessao() {
     sessaoAtual.respondida = false;
     sessaoAtual.ultimaResposta = null;
     sessaoAtual.alternativasEmbaralhadas = null;
+    sessaoAtual.eliminadas = null;
     renderizar();
   });
   return btn;
@@ -1929,6 +1957,18 @@ function telaBackup() {
   secImport.appendChild(btnRestaurar);
   c.appendChild(secImport);
 
+  const secManutencao = criarEl("div", "bg-stone-900 border border-stone-800 rounded-2xl p-4 mt-6");
+  secManutencao.appendChild(criarEl("p", "text-stone-200 mb-1", "🔄 Forçar atualização do app"));
+  secManutencao.appendChild(criarEl("p", "text-xs text-stone-500 mb-3", "Se você atualizou o app pelo GitHub e ele não está aparecendo aqui, use este botão pra limpar a versão salva e buscar a mais nova."));
+  const btnForcar = criarEl("button", "w-full bg-stone-800 text-stone-200 rounded-xl py-2.5 text-sm", "Verificar e atualizar agora");
+  btnForcar.addEventListener("click", async () => {
+    btnForcar.disabled = true;
+    btnForcar.textContent = "Atualizando...";
+    await forcarAtualizacaoApp();
+  });
+  secManutencao.appendChild(btnForcar);
+  c.appendChild(secManutencao);
+
   return c;
 }
 
@@ -2431,6 +2471,33 @@ function montarEdicao(q, container, aoSalvar) {
     container.appendChild(wrapGab);
     container.dataset._getGabarito = "";
     container._pegarGabarito = () => novoGabarito;
+  } else if (q.tipo === "MC") {
+    container.appendChild(criarEl("label", "block text-sm text-stone-400 mb-1.5 mt-1", "Alternativas (marque a correta)"));
+    const wrapAlternativas = criarEl("div", "space-y-2");
+    const linhasAlt = q.alternativas.map((alt, idx) => {
+      const linha = criarEl("div", "flex items-center gap-2");
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "gabaritoMC_" + Math.random().toString(36).slice(2, 6);
+      radio.className = "accent-emerald-500 flex-shrink-0";
+      radio.checked = !!alt.correta;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = alt.texto;
+      input.className = "flex-1 bg-stone-950 border border-stone-800 rounded-lg px-3 py-2 text-sm text-stone-200 outline-none focus:border-amber-500/60";
+      linha.appendChild(radio);
+      linha.appendChild(input);
+      wrapAlternativas.appendChild(linha);
+      return { radio, input };
+    });
+    // garante que só um radio fique marcado por vez (mesmo com "name" únicos gerados)
+    linhasAlt.forEach((linha, i) => {
+      linha.radio.addEventListener("change", () => {
+        linhasAlt.forEach((l2, j) => { l2.radio.checked = i === j; });
+      });
+    });
+    container.appendChild(wrapAlternativas);
+    container._pegarAlternativas = () => linhasAlt.map((l) => ({ texto: l.input.value.trim(), correta: l.radio.checked }));
   }
 
   const wrapFlag = criarEl("label", "flex items-center gap-2 text-xs text-stone-400");
@@ -2448,6 +2515,12 @@ function montarEdicao(q, container, aoSalvar) {
     q.justificativa = inputJustificativa.value.trim();
     q.precisaRevisao = checkFlag.checked;
     if (q.tipo === "CE" && container._pegarGabarito) q.gabarito = container._pegarGabarito();
+    if (q.tipo === "MC" && container._pegarAlternativas) {
+      const novasAlternativas = container._pegarAlternativas();
+      if (novasAlternativas.some((a) => !a.texto)) { alertaInline(container, "Preencha o texto de todas as alternativas."); return; }
+      if (!novasAlternativas.some((a) => a.correta)) { alertaInline(container, "Marque qual alternativa é a correta."); return; }
+      q.alternativas = novasAlternativas;
+    }
     await salvarQuestao(q);
     aoSalvar();
   });
@@ -2457,6 +2530,26 @@ function montarEdicao(q, container, aoSalvar) {
 // ---------------------------------------------------------
 // Inicialização
 // ---------------------------------------------------------
+// Limpa o cache/service worker salvos e recarrega, buscando a versão mais
+// nova do app direto do servidor. Útil quando uma atualização não aparece
+// sozinha (ex: navegador "grudado" numa cópia antiga).
+async function forcarAtualizacaoApp() {
+  try {
+    if ("serviceWorker" in navigator) {
+      const registros = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registros.map((r) => r.unregister()));
+    }
+    if ("caches" in window) {
+      const chaves = await caches.keys();
+      await Promise.all(chaves.map((k) => caches.delete(k)));
+    }
+  } catch (e) {
+    console.warn("Erro ao forçar atualização:", e);
+  } finally {
+    window.location.reload();
+  }
+}
+
 async function iniciar() {
   await ativarModoFallbackSeNecessario();
   await seedInicial();

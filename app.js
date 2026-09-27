@@ -22,6 +22,7 @@ let firebaseApp = null;
 let firebaseAuth = null;
 let firebaseDb = null;
 let usuarioLogado = null; // {uid, email, nome} ou null
+let erroUltimoLogin = null;
 let ultimoTimestampSincronizado = 0;
 let pararEscutaNuvem = null; // função pra cancelar o listener do Firestore
 let timerEnvioNuvem = null;
@@ -33,7 +34,11 @@ function configurarFirebase() {
     firebaseAuth = firebase.auth();
     firebaseDb = firebase.firestore();
     // Conclui o login caso a página tenha acabado de voltar de um redirecionamento do Google
-    firebaseAuth.getRedirectResult().catch((e) => console.warn("Erro ao concluir login:", e));
+    firebaseAuth.getRedirectResult().catch((e) => {
+      console.warn("Erro ao concluir login:", e);
+      erroUltimoLogin = e && e.message ? e.message : String(e);
+      if (estado.tela === "backup") renderizar();
+    });
     firebaseAuth.onAuthStateChanged((user) => {
       if (user) {
         usuarioLogado = { uid: user.uid, email: user.email, nome: user.displayName };
@@ -54,11 +59,20 @@ async function entrarComGoogle() {
     return { erro: "Isso só funciona pelo link do site (não abrindo o arquivo direto do computador). Acesse https://regianeformigari-hash.github.io/CONCURSOS/ e tente de novo por lá." };
   }
   if (!firebaseAuth) return { erro: "Firebase não carregou (verifique sua internet)." };
+  const provider = new firebase.auth.GoogleAuthProvider();
   try {
-    const provider = new firebase.auth.GoogleAuthProvider();
-    await firebaseAuth.signInWithRedirect(provider);
-    return { ok: true }; // a página vai recarregar sozinha após escolher a conta
+    await firebaseAuth.signInWithPopup(provider);
+    return { ok: true };
   } catch (e) {
+    const tentarRedirect = ["auth/popup-blocked", "auth/operation-not-supported-in-this-environment", "auth/cancelled-popup-request"];
+    if (tentarRedirect.includes(e.code)) {
+      try {
+        await firebaseAuth.signInWithRedirect(provider);
+        return { ok: true }; // a página vai recarregar sozinha após escolher a conta
+      } catch (e2) {
+        return { erro: e2.message || "Não foi possível entrar." };
+      }
+    }
     return { erro: e.message || "Não foi possível entrar." };
   }
 }
@@ -1853,8 +1867,12 @@ function telaBackup() {
     secNuvem.appendChild(btnSair);
   } else {
     secNuvem.appendChild(criarEl("p", "text-xs text-stone-500 mb-3", "Entre com sua conta Google para sincronizar automaticamente entre o PC e o celular, sem precisar copiar nada. Faça isso nos dois aparelhos, com a mesma conta."));
+    if (erroUltimoLogin) {
+      secNuvem.appendChild(criarEl("p", "text-xs text-red-400 mb-3", `Última tentativa de login falhou: ${erroUltimoLogin}`));
+    }
     const btnEntrar = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-xl py-3 flex items-center justify-center gap-2", "Entrar com Google");
     btnEntrar.addEventListener("click", async () => {
+      erroUltimoLogin = null;
       btnEntrar.disabled = true;
       btnEntrar.textContent = "Conectando...";
       const r = await entrarComGoogle();

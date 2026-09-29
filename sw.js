@@ -2,7 +2,7 @@
 // Arquivos do PRÓPRIO app (html/js/json): network-first — sempre busca a
 // versão mais nova quando há internet, e só usa o cache salvo se estiver
 // offline. Bibliotecas externas (CDN) e ícones: cache-first, pois raramente mudam.
-const CACHE_NAME = "lex-revisao-v3";
+const CACHE_NAME = "lex-revisao-v4";
 const ARQUIVOS_PROPRIOS = ["/", "/index.html", "/app.js", "/manifest.json"];
 const ASSETS = [
   "./",
@@ -47,7 +47,7 @@ self.addEventListener("fetch", (event) => {
   // Arquivos do próprio app: tenta a rede primeiro (pega sempre a versão mais nova)
   if (ehArquivoProprio(event.request.url) || event.request.mode === "navigate") {
     event.respondWith(
-      fetch(event.request)
+      fetch(event.request, { cache: "no-store" })
         .then((response) => {
           if (response && response.status === 200) {
             const clone = response.clone();

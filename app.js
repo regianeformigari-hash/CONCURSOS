@@ -94,7 +94,7 @@ function iniciarEscutaNuvem(uid) {
       return;
     }
     if ((dados.atualizadoEm || 0) > ultimoTimestampSincronizado) {
-      await Store.substituirTudoLocal(dados.materias || [], dados.questoes || [], dados.projetos || []);
+      await Store.substituirTudoLocal(dados.materias || [], dados.questoes || [], dados.projetos || [], dados.leiCards || []);
       ultimoTimestampSincronizado = dados.atualizadoEm;
       await Store.setConfig("firebaseUltimoSyncTs", ultimoTimestampSincronizado);
       await carregarTudo();
@@ -115,6 +115,7 @@ async function enviarParaNuvem() {
     materias: CACHE_MATERIAS,
     questoes: CACHE_QUESTOES,
     projetos: CACHE_PROJETOS,
+    leiCards: CACHE_LEI_CARDS,
     atualizadoEm: agora,
   };
   try {
@@ -138,13 +139,16 @@ db.version(2).stores({
   projetos: "++id, nome",
   config: "chave",
 });
+db.version(3).stores({
+  leiCards: "++id, materiaId, ordem",
+});
 
 // Em alguns navegadores/configurações (ex: abrir o arquivo direto do disco no
 // Windows) o IndexedDB pode ficar bloqueado. Nesse caso o app cai para uma
 // memória temporária, em vez de travar a tela toda.
 let USANDO_FALLBACK = false;
 let fallbackAutoId = 1;
-const fallbackDB = { materias: [], questoes: [], projetos: [], config: {} };
+const fallbackDB = { materias: [], questoes: [], projetos: [], config: {}, leiCards: [] };
 
 const Store = {
   async contarMaterias() {
@@ -262,21 +266,62 @@ const Store = {
 
   // Aplica um "retrato" completo vindo da nuvem (substitui tudo, preservando os IDs originais
   // pra manter as referências entre questões/matérias/projetos intactas)
-  async substituirTudoLocal(materiasNovas, questoesNovas, projetosNovas) {
+  async substituirTudoLocal(materiasNovas, questoesNovas, projetosNovas, leiCardsNovas) {
+    leiCardsNovas = leiCardsNovas || [];
     if (USANDO_FALLBACK) {
       fallbackDB.materias = materiasNovas;
       fallbackDB.questoes = questoesNovas;
       fallbackDB.projetos = projetosNovas;
+      fallbackDB.leiCards = leiCardsNovas;
       return;
     }
-    await db.transaction("rw", db.materias, db.questoes, db.projetos, async () => {
+    await db.transaction("rw", db.materias, db.questoes, db.projetos, db.leiCards, async () => {
       await db.materias.clear();
       await db.questoes.clear();
       await db.projetos.clear();
+      await db.leiCards.clear();
       if (materiasNovas.length) await db.materias.bulkAdd(materiasNovas);
       if (questoesNovas.length) await db.questoes.bulkAdd(questoesNovas);
       if (projetosNovas.length) await db.projetos.bulkAdd(projetosNovas);
+      if (leiCardsNovas.length) await db.leiCards.bulkAdd(leiCardsNovas);
     });
+  },
+
+  // Cards de leitura da letra da lei (módulo carrossel)
+  async addLeiCard(obj) {
+    if (USANDO_FALLBACK) {
+      const id = fallbackAutoId++;
+      fallbackDB.leiCards.push({ ...obj, id });
+      agendarEnvioNuvem();
+      return id;
+    }
+    const id = await db.leiCards.add(obj);
+    agendarEnvioNuvem();
+    return id;
+  },
+  async putLeiCard(obj) {
+    if (USANDO_FALLBACK) {
+      const idx = fallbackDB.leiCards.findIndex((c) => c.id === obj.id);
+      if (idx >= 0) fallbackDB.leiCards[idx] = obj;
+      else fallbackDB.leiCards.push(obj);
+      agendarEnvioNuvem();
+      return obj.id;
+    }
+    const r = await db.leiCards.put(obj);
+    agendarEnvioNuvem();
+    return r;
+  },
+  async getAllLeiCards() {
+    return USANDO_FALLBACK ? [...fallbackDB.leiCards] : db.leiCards.toArray();
+  },
+  async deleteLeiCard(id) {
+    if (USANDO_FALLBACK) {
+      fallbackDB.leiCards = fallbackDB.leiCards.filter((c) => c.id !== id);
+      agendarEnvioNuvem();
+      return;
+    }
+    await db.leiCards.delete(id);
+    agendarEnvioNuvem();
   },
 
   // Configurações simples (chave/valor) — ex: projeto ativo
@@ -381,12 +426,14 @@ async function seedInicial() {
 let CACHE_MATERIAS = [];
 let CACHE_QUESTOES = [];
 let CACHE_PROJETOS = [];
+let CACHE_LEI_CARDS = [];
 let PROJETO_ATIVO_ID = null; // null = "todos os projetos" (sem filtro)
 
 async function carregarTudo() {
   CACHE_MATERIAS = await Store.getAllMaterias();
   CACHE_QUESTOES = await Store.getAllQuestoes();
   CACHE_PROJETOS = await Store.getAllProjetos();
+  CACHE_LEI_CARDS = await Store.getAllLeiCards();
   const salvo = await Store.getConfig("projetoAtivoId");
   PROJETO_ATIVO_ID = salvo ? Number(salvo) : null;
 }
@@ -809,6 +856,9 @@ function renderizar() {
     auditor: telaAuditor,
     projetos: telaProjetos,
     pendentes: telaPendentes,
+    importarLei: telaImportarLei,
+    leituraSelecionar: telaLeituraSelecionar,
+    leituraCarrossel: telaLeituraCarrossel,
   };
   const fn = telas[estado.tela] || telaHome;
   app.appendChild(fn());
@@ -916,6 +966,10 @@ function telaHome() {
   const btnManual = criarEl("button", "w-full bg-stone-900 border border-stone-800 text-stone-300 rounded-xl py-3.5 active:scale-[0.99] transition", "Cadastrar questão manualmente");
   btnManual.addEventListener("click", () => ir("manual"));
   acoes.appendChild(btnManual);
+
+  const btnLeitura = criarEl("button", "w-full bg-stone-900 border border-amber-500/30 text-amber-300 rounded-xl py-3.5 active:scale-[0.99] transition", "📖 Ler e revisar a letra da lei");
+  btnLeitura.addEventListener("click", () => ir("leituraSelecionar"));
+  acoes.appendChild(btnLeitura);
 
   const linha2 = criarEl("div", "grid grid-cols-2 gap-3");
   const btnBackup = criarEl("button", "text-stone-400 text-sm py-2 border border-stone-800 rounded-lg", "🔄 Backup / Sincronizar");
@@ -1040,6 +1094,299 @@ function telaImportar() {
   c.appendChild(form);
   return c;
 }
+
+// ---------------------------------------------------------
+// Módulo de Leitura e Revisão da Letra da Lei (carrossel)
+// ---------------------------------------------------------
+
+// Extrai os campos [DISPOSITIVO] / [TEXTO] / [EXPLICAÇÃO] de um bloco de
+// texto, aceitando com ou sem colchetes, com ou sem acento, em qualquer ordem.
+function parseBlocoLei(bloco) {
+  const TAG_RE = /\[?\s*(DISPOSITIVO|TEXTO|EXPLICA[CÇ][AÃ]O)\s*\]?\s*:?/gi;
+  const marcas = [];
+  let m;
+  while ((m = TAG_RE.exec(bloco))) {
+    marcas.push({ tag: m[1].toUpperCase(), fim: m.index + m[0].length, inicio: m.index });
+  }
+  const partes = {};
+  for (let i = 0; i < marcas.length; i++) {
+    const atual = marcas[i];
+    const fimConteudo = i + 1 < marcas.length ? marcas[i + 1].inicio : bloco.length;
+    const conteudo = bloco.slice(atual.fim, fimConteudo).trim();
+    const chave = atual.tag.startsWith("EXPLICA") ? "explicacao" : atual.tag.toLowerCase();
+    partes[chave] = conteudo;
+  }
+  return partes;
+}
+
+// Recebe o texto colado inteiro (vários blocos separados por "---") e devolve
+// os cards reconhecidos + os números dos blocos que não puderam ser lidos.
+function parseImportacaoLei(raw) {
+  const blocosBrutos = raw.split(/\r?\n[ \t]*-{3,}[ \t]*\r?\n?|\r?\n[ \t]*-{3,}[ \t]*$/g);
+  const registros = [];
+  const blocosComErro = [];
+  let numero = 0;
+  blocosBrutos.forEach((blocoBruto) => {
+    const bloco = blocoBruto.trim();
+    if (!bloco) return;
+    numero += 1;
+    const { dispositivo, texto, explicacao } = parseBlocoLei(bloco);
+    if (!dispositivo || !texto) {
+      blocosComErro.push(numero);
+      return;
+    }
+    registros.push({ dispositivo, texto, explicacao: explicacao || "" });
+  });
+  return { registros, blocosComErro };
+}
+
+// ---- IMPORTAÇÃO EM MASSA — LETRA DA LEI ----
+function telaImportarLei() {
+  const c = criarEl("div", "max-w-md mx-auto px-5 pt-8 pb-24");
+  c.appendChild(cabecalho("Importar letra da lei", "Cole o texto no formato de dispositivos para o modo de leitura em carrossel"));
+
+  const form = criarEl("div", "space-y-4");
+  const { wrap: wrapMateria, select: selectMateria } = campoSelectMaterias();
+  form.appendChild(wrapMateria);
+
+  const { wrap: wrapDiploma, input: inputDiploma } = campoInput("Diploma legal", "Ex: CF/88, CPC, Lei 8.429/1992...");
+  form.appendChild(wrapDiploma);
+
+  const { wrap: wrapProjetos, getSelecionados: getProjetosSelecionados } = campoSelecaoProjetos();
+  form.appendChild(wrapProjetos);
+
+  form.appendChild(criarEl(
+    "p",
+    "text-xs text-stone-500 leading-relaxed bg-stone-900 border border-stone-800 rounded-xl p-3",
+    "Formato (uma seção por dispositivo, separadas por uma linha só com <b class='text-stone-300'>---</b>):<br><br>" +
+      "<span class='text-stone-400'>[DISPOSITIVO]: Art. 5º, Inciso II<br>" +
+      "[TEXTO]: ninguém será obrigado a fazer ou deixar de fazer alguma coisa senão em virtude de lei.<br>" +
+      "[EXPLICAÇÃO]: Este é o princípio da legalidade...<br>" +
+      "---</span>"
+  ));
+
+  const { wrap: wrapTexto, input: textareaTexto } = campoTextarea("Colar texto da lei", "Cole aqui os dispositivos no formato acima...", 10);
+  form.appendChild(wrapTexto);
+
+  const wrapArquivo = criarEl("div");
+  wrapArquivo.appendChild(criarEl("label", "block text-sm text-stone-400 mb-1.5", "Ou envie um arquivo .txt"));
+  const inputArquivo = document.createElement("input");
+  inputArquivo.type = "file";
+  inputArquivo.accept = ".txt";
+  inputArquivo.className = "w-full text-sm text-stone-400";
+  inputArquivo.addEventListener("change", () => {
+    const file = inputArquivo.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => { textareaTexto.value = reader.result; };
+    reader.readAsText(file, "UTF-8");
+  });
+  wrapArquivo.appendChild(inputArquivo);
+  form.appendChild(wrapArquivo);
+
+  const btnPreview = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-xl py-3.5 mt-2", "Pré-visualizar importação");
+  const areaPreview = criarEl("div", "mt-4");
+  btnPreview.addEventListener("click", () => {
+    areaPreview.innerHTML = "";
+    const raw = textareaTexto.value.trim();
+    const diploma = inputDiploma.value.trim();
+    if (!raw || !diploma) { alertaInline(form, "Preencha o diploma legal e cole o texto (ou envie o arquivo) antes de importar."); return; }
+    const { registros, blocosComErro } = parseImportacaoLei(raw);
+
+    const resumo = criarEl("div", "bg-stone-900 border border-stone-800 rounded-xl p-4 mb-3");
+    resumo.appendChild(criarEl("p", "text-stone-200", `${registros.length} dispositivo(s) reconhecido(s).`));
+    if (blocosComErro.length) {
+      resumo.appendChild(criarEl("p", "text-xs text-red-400 mt-1", `Bloco(s) com formato inválido, ignorado(s): ${blocosComErro.join(", ")}`));
+    }
+    areaPreview.appendChild(resumo);
+
+    if (registros.length > 0) {
+      const listaPreview = criarEl("div", "space-y-2 mb-3 max-h-64 overflow-y-auto");
+      registros.slice(0, 5).forEach((r) => {
+        const item = criarEl("div", "bg-stone-950 border border-stone-800 rounded-lg p-3");
+        item.appendChild(criarEl("p", "text-xs text-amber-400", r.dispositivo));
+        item.appendChild(criarEl("p", "text-xs text-stone-400 mt-1 line-clamp-2", r.texto));
+        listaPreview.appendChild(item);
+      });
+      if (registros.length > 5) listaPreview.appendChild(criarEl("p", "text-xs text-stone-600", `... e mais ${registros.length - 5}.`));
+      areaPreview.appendChild(listaPreview);
+
+      const btnConfirmar = criarEl("button", "w-full bg-emerald-500 text-stone-950 font-medium rounded-xl py-3.5", `Confirmar e salvar ${registros.length} dispositivo(s)`);
+      btnConfirmar.addEventListener("click", async () => {
+        const materiaId = Number(selectMateria.value);
+        const projetosIds = getProjetosSelecionados();
+        const jaExistentes = CACHE_LEI_CARDS.filter((cc) => cc.materiaId === materiaId && cc.diploma === diploma).length;
+        for (let i = 0; i < registros.length; i++) {
+          const r = registros[i];
+          await Store.addLeiCard({
+            materiaId,
+            diploma,
+            dispositivo: r.dispositivo,
+            texto: r.texto,
+            explicacao: r.explicacao,
+            projetosIds,
+            ordem: jaExistentes + i,
+          });
+        }
+        await carregarTudo();
+        ir("home");
+      });
+      areaPreview.appendChild(btnConfirmar);
+    }
+  });
+
+  form.appendChild(btnPreview);
+  form.appendChild(areaPreview);
+  c.appendChild(form);
+  return c;
+}
+
+// ---- LEITURA DA LEI — SELECIONAR MATÉRIA/DIPLOMA ----
+function telaLeituraSelecionar() {
+  const c = criarEl("div", "max-w-md mx-auto px-5 pt-8 pb-24");
+  c.appendChild(cabecalho("Leitura da letra da lei", "Escolha o que revisar em modo carrossel"));
+
+  const cardsDoProjeto = filtrarPorProjetoAtivo(CACHE_LEI_CARDS);
+
+  if (cardsDoProjeto.length === 0) {
+    c.appendChild(criarEl("p", "text-stone-500 text-sm mb-6", "Nenhum dispositivo importado ainda para o projeto ativo."));
+    const btnImportar = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-xl py-3.5", "+ Importar letra da lei");
+    btnImportar.addEventListener("click", () => ir("importarLei"));
+    c.appendChild(btnImportar);
+    return c;
+  }
+
+  // Agrupa por matéria -> diploma
+  const grupos = {};
+  cardsDoProjeto.forEach((card) => {
+    const chaveMateria = card.materiaId;
+    grupos[chaveMateria] = grupos[chaveMateria] || {};
+    grupos[chaveMateria][card.diploma] = grupos[chaveMateria][card.diploma] || [];
+    grupos[chaveMateria][card.diploma].push(card);
+  });
+
+  const lista = criarEl("div", "space-y-3");
+  Object.keys(grupos).forEach((materiaIdStr) => {
+    const materiaId = Number(materiaIdStr);
+    const bloco = criarEl("div", "bg-stone-900 border border-stone-800 rounded-2xl p-4");
+    bloco.appendChild(criarEl("p", "text-stone-200 mb-2", nomeMateria(materiaId)));
+    Object.keys(grupos[materiaId]).forEach((diploma) => {
+      const cards = grupos[materiaId][diploma];
+      const btn = criarEl(
+        "button",
+        "w-full text-left flex items-center justify-between bg-stone-950 border border-stone-800 rounded-xl px-3 py-2.5 mb-2 last:mb-0",
+      );
+      btn.innerHTML = `<span class="text-sm text-stone-300">${diploma}</span><span class="text-xs text-stone-500">${cards.length} dispositivo(s) ›</span>`;
+      btn.addEventListener("click", () => ir("leituraCarrossel", { materiaId, diploma, index: 0 }));
+      bloco.appendChild(btn);
+    });
+    lista.appendChild(bloco);
+  });
+  c.appendChild(lista);
+
+  const btnImportarMais = criarEl("button", "w-full text-stone-400 text-sm py-2 border border-stone-800 rounded-lg mt-5", "+ Importar mais dispositivos");
+  btnImportarMais.addEventListener("click", () => ir("importarLei"));
+  c.appendChild(btnImportarMais);
+
+  return c;
+}
+
+// ---- LEITURA DA LEI — CARROSSEL ----
+function telaLeituraCarrossel() {
+  const { materiaId, diploma } = estado;
+  let index = estado.index || 0;
+
+  const cards = CACHE_LEI_CARDS
+    .filter((c2) => c2.materiaId === materiaId && c2.diploma === diploma)
+    .sort((a, b) => (a.ordem || 0) - (b.ordem || 0));
+
+  const c = criarEl("div", "max-w-md mx-auto px-5 pt-8 pb-24 min-h-screen flex flex-col");
+
+  const topo = criarEl("div", "flex items-center gap-3 mb-4");
+  const btnVoltar = criarEl("button", "text-stone-400 hover:text-amber-400 text-xl leading-none px-1", "←");
+  btnVoltar.addEventListener("click", () => ir("leituraSelecionar"));
+  topo.appendChild(btnVoltar);
+  const boxTitulo = criarEl("div", "flex-1");
+  boxTitulo.appendChild(criarEl("p", "text-xs text-amber-500/80", diploma));
+  boxTitulo.appendChild(criarEl("p", "text-sm text-stone-400", nomeMateria(materiaId)));
+  topo.appendChild(boxTitulo);
+  c.appendChild(topo);
+
+  if (cards.length === 0) {
+    c.appendChild(criarEl("p", "text-stone-500 text-sm", "Nenhum dispositivo encontrado."));
+    return c;
+  }
+
+  if (index < 0) index = 0;
+  if (index > cards.length - 1) index = cards.length - 1;
+  const card = cards[index];
+
+  // Barra de progresso
+  const wrapProgresso = criarEl("div", "mb-5");
+  const barraFundo = criarEl("div", "w-full h-1.5 bg-stone-800 rounded-full overflow-hidden");
+  const barraPreenchida = criarEl("div", "h-full bg-amber-500 rounded-full transition-all");
+  barraPreenchida.style.width = `${((index + 1) / cards.length) * 100}%`;
+  barraFundo.appendChild(barraPreenchida);
+  wrapProgresso.appendChild(barraFundo);
+  wrapProgresso.appendChild(criarEl("p", "text-xs text-stone-500 mt-1.5 text-center", `Slide ${index + 1} de ${cards.length}`));
+  c.appendChild(wrapProgresso);
+
+  // Card principal
+  const cardEl = criarEl("div", "flex-1 bg-stone-900 border border-stone-800 rounded-2xl p-6 flex flex-col");
+  cardEl.appendChild(criarEl("span", "inline-block text-xs bg-amber-500/15 text-amber-400 rounded-full px-3 py-1 mb-4 self-start", card.dispositivo));
+  cardEl.appendChild(criarEl("p", "font-serif text-lg text-stone-100 leading-relaxed flex-1", card.texto));
+
+  const wrapExplicacao = criarEl("div", "mt-4");
+  if (card.explicacao) {
+    const btnToggle = criarEl("button", "text-xs text-amber-400 border border-amber-500/30 rounded-lg px-3 py-2", "💡 Ver Explicação / Dica");
+    const painel = criarEl("div", "hidden mt-3 bg-stone-950 border border-stone-800 rounded-xl p-4 text-sm text-stone-300 leading-relaxed", card.explicacao);
+    btnToggle.addEventListener("click", () => {
+      const oculto = painel.classList.contains("hidden");
+      painel.classList.toggle("hidden");
+      btnToggle.textContent = oculto ? "▲ Ocultar Explicação / Dica" : "💡 Ver Explicação / Dica";
+    });
+    wrapExplicacao.appendChild(btnToggle);
+    wrapExplicacao.appendChild(painel);
+  }
+  cardEl.appendChild(wrapExplicacao);
+  c.appendChild(cardEl);
+
+  // Navegação
+  const nav = criarEl("div", "grid grid-cols-2 gap-3 mt-5");
+  const btnAnterior = criarEl("button", "rounded-xl py-3.5 text-sm " + (index === 0 ? "bg-stone-900 text-stone-700" : "bg-stone-800 text-stone-200"), "‹ Anterior");
+  btnAnterior.disabled = index === 0;
+  btnAnterior.addEventListener("click", () => ir("leituraCarrossel", { materiaId, diploma, index: index - 1 }));
+  const btnProximo = criarEl("button", "rounded-xl py-3.5 text-sm " + (index === cards.length - 1 ? "bg-stone-900 text-stone-700" : "bg-amber-500 text-stone-950 font-medium"), index === cards.length - 1 ? "Fim ✓" : "Próximo ›");
+  btnProximo.disabled = index === cards.length - 1;
+  btnProximo.addEventListener("click", () => ir("leituraCarrossel", { materiaId, diploma, index: index + 1 }));
+  nav.appendChild(btnAnterior);
+  nav.appendChild(btnProximo);
+  c.appendChild(nav);
+
+  // Navegação por toque (swipe) no card
+  let touchStartX = null;
+  cardEl.addEventListener("touchstart", (e) => { touchStartX = e.touches[0].clientX; }, { passive: true });
+  cardEl.addEventListener("touchend", (e) => {
+    if (touchStartX === null) return;
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    touchStartX = null;
+    if (Math.abs(dx) < 40) return;
+    if (dx < 0 && index < cards.length - 1) ir("leituraCarrossel", { materiaId, diploma, index: index + 1 });
+    else if (dx > 0 && index > 0) ir("leituraCarrossel", { materiaId, diploma, index: index - 1 });
+  }, { passive: true });
+
+  return c;
+}
+
+// Navegação por teclado (setas) no modo carrossel — registrado uma única vez.
+document.addEventListener("keydown", (e) => {
+  if (estado.tela !== "leituraCarrossel") return;
+  const { materiaId, diploma } = estado;
+  const index = estado.index || 0;
+  const cards = CACHE_LEI_CARDS.filter((c2) => c2.materiaId === materiaId && c2.diploma === diploma);
+  if (e.key === "ArrowRight" && index < cards.length - 1) ir("leituraCarrossel", { materiaId, diploma, index: index + 1 });
+  else if (e.key === "ArrowLeft" && index > 0) ir("leituraCarrossel", { materiaId, diploma, index: index - 1 });
+});
 
 // ---- CADASTRO MANUAL ----
 function telaManual() {
@@ -1896,7 +2243,7 @@ function telaBackup() {
   const btnGerar = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-xl py-3 mb-3", "Gerar backup agora");
   const areaCodigo = criarEl("div");
   btnGerar.addEventListener("click", () => {
-    const dados = JSON.stringify({ materias: CACHE_MATERIAS, questoes: CACHE_QUESTOES }, null, 0);
+    const dados = JSON.stringify({ materias: CACHE_MATERIAS, questoes: CACHE_QUESTOES, projetos: CACHE_PROJETOS, leiCards: CACHE_LEI_CARDS }, null, 0);
     areaCodigo.innerHTML = "";
     const textarea = document.createElement("textarea");
     textarea.readOnly = true;
@@ -1960,15 +2307,7 @@ function telaBackup() {
     if (!dados.materias || !dados.questoes) { alertaInline(secImport, "Arquivo não parece ser um backup válido."); return; }
     if (!confirm("Isso vai apagar os dados atuais deste aparelho e colocar os dados do backup. Continuar?")) return;
 
-    const nomesAntigos = {};
-    dados.materias.forEach((m) => (nomesAntigos[m.id] = m.nome));
-    const mapaPorNome = await Store.restaurarMaterias(dados.materias);
-    const primeiroId = Object.values(mapaPorNome)[0];
-    for (const q of dados.questoes) {
-      const nomeMat = nomesAntigos[q.materiaId];
-      const novoMateriaId = mapaPorNome[nomeMat] ?? primeiroId;
-      await Store.addQuestao({ ...q, id: undefined, materiaId: novoMateriaId });
-    }
+    await Store.substituirTudoLocal(dados.materias, dados.questoes, dados.projetos || [], dados.leiCards || []);
     await carregarTudo();
     ir("home");
   });

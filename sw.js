@@ -2,7 +2,7 @@
 // Arquivos do PRÓPRIO app (html/js/json): network-first — sempre busca a
 // versão mais nova quando há internet, e só usa o cache salvo se estiver
 // offline. Bibliotecas externas (CDN) e ícones: cache-first, pois raramente mudam.
-const CACHE_NAME = "lex-revisao-v4";
+const CACHE_NAME = "lex-revisao-v5";
 const ARQUIVOS_PROPRIOS = ["/", "/index.html", "/app.js", "/manifest.json"];
 const ASSETS = [
   "./",

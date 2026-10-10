@@ -479,31 +479,37 @@ function formatarDataBR(str) {
 }
 
 // ---------------------------------------------------------
-// SRS — repetição espaçada por data civil, teto de 20 dias
+// SRS — revisão por dificuldade escolhida por você (cada questão tem seu próprio prazo)
+// Fácil = volta em 7 dias · Médio = 3 dias · Difícil = 1 dia (amanhã)
 // ---------------------------------------------------------
-const TETO_MAXIMO_DIAS = 20;
+const DIAS_POR_DIFICULDADE = { facil: 7, medio: 3, dificil: 1 };
+const NOME_DIFICULDADE = { facil: "Fácil", medio: "Médio", dificil: "Difícil" };
 
 function novoSRS() {
   return { intervalo: 0, proximaRevisaoData: hojeStr(), acertosSeguidos: 0, historico: [] };
 }
 
-function atualizarSRS(srs, acertou) {
+// Registra que a questão foi respondida (para as estatísticas).
+// Enquanto você não escolher Fácil/Médio/Difícil, ela fica marcada para amanhã.
+function registrarResposta(srs, acertou) {
   const hoje = hojeStr();
-  if (!acertou) {
-    srs.acertosSeguidos = 0;
-    srs.intervalo = 1;
-  } else {
-    srs.acertosSeguidos += 1;
-    const tabela = { 1: 2, 2: 3, 3: 4, 4: 5 };
-    if (srs.acertosSeguidos in tabela) {
-      srs.intervalo = tabela[srs.acertosSeguidos];
-    } else {
-      srs.intervalo = Math.min(srs.intervalo + 2, TETO_MAXIMO_DIAS);
-    }
-  }
-  srs.intervalo = Math.min(srs.intervalo, TETO_MAXIMO_DIAS);
-  srs.proximaRevisaoData = addDiasStr(hoje, srs.intervalo);
+  srs.acertosSeguidos = acertou ? (srs.acertosSeguidos || 0) + 1 : 0;
+  srs.intervalo = 1;
+  srs.proximaRevisaoData = addDiasStr(hoje, 1);
   srs.historico.push({ data: hoje, acertou });
+  return srs;
+}
+
+// Aplica a dificuldade escolhida: define quando a questão volta.
+function aplicarDificuldade(srs, dificuldade) {
+  const dias = DIAS_POR_DIFICULDADE[dificuldade];
+  if (!dias) return srs;
+  const hoje = hojeStr();
+  srs.intervalo = dias;
+  srs.dificuldade = dificuldade;
+  srs.proximaRevisaoData = addDiasStr(hoje, dias);
+  const ultimo = srs.historico[srs.historico.length - 1];
+  if (ultimo && ultimo.data === hoje) ultimo.dificuldade = dificuldade;
   return srs;
 }
 
@@ -1743,7 +1749,7 @@ function telaSessao() {
 
 async function responderCE(questao, respostaUsuario) {
   const acertou = respostaUsuario === questao.gabarito;
-  atualizarSRS(questao.srs, acertou);
+  registrarResposta(questao.srs, acertou);
   await salvarQuestao(questao);
   if (acertou) sessaoAtual.acertos += 1;
   sessaoAtual.respondida = true;
@@ -1752,7 +1758,7 @@ async function responderCE(questao, respostaUsuario) {
 }
 async function responderMC(questao, altEscolhida) {
   const acertou = !!altEscolhida.correta;
-  atualizarSRS(questao.srs, acertou);
+  registrarResposta(questao.srs, acertou);
   await salvarQuestao(questao);
   if (acertou) sessaoAtual.acertos += 1;
   sessaoAtual.respondida = true;
@@ -1768,7 +1774,7 @@ function painelFeedbackCE(questao) {
   banner.appendChild(criarEl("p", "text-sm text-stone-400 mt-1", `Gabarito: ${questao.gabarito ? "Certo" : "Errado"}.`));
   wrap.appendChild(banner);
   wrap.appendChild(painelJustificativa(questao));
-  wrap.appendChild(btnProximaSessao());
+  wrap.appendChild(painelDificuldade(questao));
   return wrap;
 }
 function painelFeedbackMC(questao) {
@@ -1785,28 +1791,47 @@ function painelFeedbackMC(questao) {
   const banner = criarEl("p", `font-medium mb-3 ${acertou ? "text-emerald-400" : "text-red-400"}`, acertou ? "Você acertou." : "Você errou.");
   wrap.appendChild(banner);
   wrap.appendChild(painelJustificativa(questao));
-  wrap.appendChild(btnProximaSessao());
+  wrap.appendChild(painelDificuldade(questao));
   return wrap;
 }
 function painelJustificativa(questao) {
   const justif = criarEl("div", "bg-stone-900 border border-stone-800 rounded-xl p-4 mb-4");
   justif.appendChild(criarEl("p", "text-xs text-stone-500 mb-1.5", "Justificativa / trecho da lei"));
   justif.appendChild(criarEl("p", "font-serif text-stone-200 leading-relaxed", questao.justificativa || "—"));
-  const prox = criarEl("p", "text-xs text-stone-500 mt-3", `Próxima revisão: ${formatarDataBR(questao.srs.proximaRevisaoData)}`);
-  justif.appendChild(prox);
   return justif;
 }
-function btnProximaSessao() {
-  const btn = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-xl py-3.5", "Próxima");
-  btn.addEventListener("click", () => {
-    sessaoAtual.pos += 1;
-    sessaoAtual.respondida = false;
-    sessaoAtual.ultimaResposta = null;
-    sessaoAtual.alternativasEmbaralhadas = null;
-    sessaoAtual.eliminadas = null;
-    renderizar();
+
+// Depois de responder: você escolhe o quanto foi difícil e a questão só volta no prazo certo.
+function painelDificuldade(questao) {
+  const wrap = criarEl("div");
+  wrap.appendChild(criarEl("p", "text-sm text-stone-300 text-center mb-2", "Como foi essa questão?"));
+  const grade = criarEl("div", "grid grid-cols-3 gap-2");
+  const opcoes = [
+    ["dificil", "Difícil", "volta amanhã", "bg-red-500/15 border-red-500/40 text-red-300"],
+    ["medio", "Médio", "volta em 3 dias", "bg-amber-500/15 border-amber-500/40 text-amber-300"],
+    ["facil", "Fácil", "volta em 7 dias", "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"],
+  ];
+  let travado = false;
+  opcoes.forEach(([chave, nome, sub, classe]) => {
+    const b = criarEl("button", `rounded-xl border py-3 ${classe}`);
+    b.appendChild(criarEl("span", "block font-medium", nome));
+    b.appendChild(criarEl("span", "block text-[11px] opacity-80", sub));
+    b.addEventListener("click", async () => {
+      if (travado) return;
+      travado = true;
+      aplicarDificuldade(questao.srs, chave);
+      await salvarQuestao(questao);
+      sessaoAtual.pos += 1;
+      sessaoAtual.respondida = false;
+      sessaoAtual.ultimaResposta = null;
+      sessaoAtual.alternativasEmbaralhadas = null;
+      sessaoAtual.eliminadas = null;
+      renderizar();
+    });
+    grade.appendChild(b);
   });
-  return btn;
+  wrap.appendChild(grade);
+  return wrap;
 }
 
 function telaResumoSessao() {
@@ -1870,37 +1895,56 @@ function telaEstatisticas() {
 
   // --- Barra de filtro de período ---
   const barraFiltro = criarEl("div", "bg-stone-900 border border-stone-800 rounded-2xl p-4 mb-4");
-  const linhaDatas = criarEl("div", "flex items-center gap-2 mb-3");
-  const inputIni = document.createElement("input");
-  inputIni.type = "date";
-  inputIni.className = "flex-1 bg-stone-950 border border-stone-800 rounded-lg px-2 py-2 text-xs text-stone-200";
-  const inputFim = document.createElement("input");
-  inputFim.type = "date";
-  inputFim.className = "flex-1 bg-stone-950 border border-stone-800 rounded-lg px-2 py-2 text-xs text-stone-200";
-  linhaDatas.appendChild(inputIni);
-  linhaDatas.appendChild(criarEl("span", "text-stone-600 text-xs", "até"));
-  linhaDatas.appendChild(inputFim);
+  const linhaDatas = criarEl("div", "grid grid-cols-2 gap-3 mb-2");
+  function campoData(rotulo) {
+    const wrap = criarEl("label", "block");
+    wrap.appendChild(criarEl("span", "block text-xs text-stone-400 mb-1", rotulo));
+    const inp = document.createElement("input");
+    inp.type = "date";
+    inp.className = "w-full bg-stone-100 border border-stone-700 rounded-lg px-2 py-2.5 text-sm";
+    inp.style.color = "#0F1114";
+    inp.style.minHeight = "42px";
+    wrap.appendChild(inp);
+    linhaDatas.appendChild(wrap);
+    return inp;
+  }
+  const inputIni = campoData("De (data inicial)");
+  const inputFim = campoData("Até (data final)");
   barraFiltro.appendChild(linhaDatas);
+  const textoPeriodo = criarEl("p", "text-xs text-amber-500/90 mb-3");
+  barraFiltro.appendChild(textoPeriodo);
 
-  const atalhos = criarEl("div", "grid grid-cols-4 gap-1.5 mb-3");
+  function mostrarPeriodo() {
+    inputIni.value = st.dataIni || "";
+    inputFim.value = st.dataFim || "";
+    if (!st.dataIni && !st.dataFim) textoPeriodo.textContent = "Mostrando: todo o período. Para ver um dia só, escolha a mesma data em \"De\" e \"Até\".";
+    else if (st.dataIni && st.dataFim) textoPeriodo.textContent = st.dataIni === st.dataFim ? `Mostrando: somente ${formatarDataBR(st.dataIni)}` : `Mostrando: de ${formatarDataBR(st.dataIni)} até ${formatarDataBR(st.dataFim)}`;
+    else if (st.dataIni) textoPeriodo.textContent = `Mostrando: a partir de ${formatarDataBR(st.dataIni)}`;
+    else textoPeriodo.textContent = `Mostrando: até ${formatarDataBR(st.dataFim)}`;
+  }
+  function aplicarCampos() {
+    let ini = inputIni.value || null;
+    let fim = inputFim.value || null;
+    if (ini && fim && ini > fim) { const t = ini; ini = fim; fim = t; }
+    st.dataIni = ini;
+    st.dataFim = fim;
+    mostrarPeriodo();
+    atualizarTudo();
+  }
+  inputIni.addEventListener("change", aplicarCampos);
+  inputFim.addEventListener("change", aplicarCampos);
+
+  const atalhos = criarEl("div", "grid grid-cols-4 gap-1.5");
   function botaoAtalho(label, fn) {
-    const b = criarEl("button", "text-xs bg-stone-800 text-stone-300 rounded-lg py-1.5", label);
-    b.addEventListener("click", () => { fn(); atualizarTudo(); });
+    const b = criarEl("button", "text-xs bg-stone-800 text-stone-300 rounded-lg py-2", label);
+    b.addEventListener("click", () => { fn(); mostrarPeriodo(); atualizarTudo(); });
     return b;
   }
   atalhos.appendChild(botaoAtalho("Hoje", () => { st.dataIni = hojeStr(); st.dataFim = hojeStr(); }));
-  atalhos.appendChild(botaoAtalho("7 dias", () => { st.dataIni = addDiasStr(hojeStr(), -7); st.dataFim = hojeStr(); }));
+  atalhos.appendChild(botaoAtalho("7 dias", () => { st.dataIni = addDiasStr(hojeStr(), -6); st.dataFim = hojeStr(); }));
   atalhos.appendChild(botaoAtalho("Este mês", () => { st.dataIni = hojeStr().slice(0, 8) + "01"; st.dataFim = hojeStr(); }));
   atalhos.appendChild(botaoAtalho("Tudo", () => { st.dataIni = null; st.dataFim = null; }));
   barraFiltro.appendChild(atalhos);
-
-  const btnFiltrar = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-lg py-2 text-sm", "Filtrar");
-  btnFiltrar.addEventListener("click", () => {
-    st.dataIni = inputIni.value || null;
-    st.dataFim = inputFim.value || null;
-    atualizarTudo();
-  });
-  barraFiltro.appendChild(btnFiltrar);
   c.appendChild(barraFiltro);
 
   // --- Cards de resumo + gráfico donut ---
@@ -1969,16 +2013,21 @@ function telaEstatisticas() {
 
   function renderResumo() {
     areaResumo.innerHTML = "";
-    let totalResolvidas = 0;
+    let totalResolvidas = 0, totalAcertos = 0;
     const materiasComResolucao = [];
     Object.entries(arvoreAtual).forEach(([materiaId, m]) => {
       totalResolvidas += m.resolvidas;
+      totalAcertos += m.acertos;
       if (m.resolvidas > 0) materiasComResolucao.push({ id: Number(materiaId), nome: nomeMateria(Number(materiaId)), resolvidas: m.resolvidas });
     });
+    const totalErros = totalResolvidas - totalAcertos;
+    const pctTotal = totalResolvidas ? Math.round((totalAcertos / totalResolvidas) * 100) + "%" : "—";
 
     const cards = criarEl("div", "grid grid-cols-2 gap-3 mb-4");
-    cards.appendChild(statBox("Questões resolvidas", totalResolvidas.toString()));
-    cards.appendChild(statBox("Matérias estudadas", materiasComResolucao.length.toString()));
+    cards.appendChild(statBox("Questões feitas", totalResolvidas.toString()));
+    cards.appendChild(statBox("Aproveitamento", pctTotal));
+    cards.appendChild(statBox("Acertos", totalAcertos.toString()));
+    cards.appendChild(statBox("Erros", totalErros.toString()));
     areaResumo.appendChild(cards);
 
     if (materiasComResolucao.length === 0) {
@@ -2015,6 +2064,10 @@ function telaEstatisticas() {
       options: { plugins: { legend: { display: false } }, cutout: "65%" },
     });
     graficosAtivos.push(chart);
+  }
+
+  function textoNumeros(d) {
+    return `${d.resolvidas} feitas · ${d.acertos} acertos · ${d.resolvidas - d.acertos} erros`;
   }
 
   function linhasOrdenadas(entradas, chavePct) {
@@ -2068,16 +2121,14 @@ function telaEstatisticas() {
 
       const infoMateria = criarEl("div", "flex-1 min-w-0");
       infoMateria.appendChild(criarEl("p", "text-sm text-stone-100 truncate", materia.nome));
+      if (st.mostrarTexto) infoMateria.appendChild(criarEl("p", "text-[11px] text-stone-500 mt-0.5", textoNumeros(dadosMateria)));
       cabecaMateria.appendChild(infoMateria);
 
-      if (st.mostrarTexto) {
-        cabecaMateria.appendChild(criarEl("span", "text-xs text-stone-500 flex-shrink-0", `${dadosMateria.resolvidas}`));
-      }
       if (pctMateria !== null) {
         const corPct = pctMateria >= 70 ? "text-emerald-400" : pctMateria >= 40 ? "text-amber-400" : "text-red-400";
-        cabecaMateria.appendChild(criarEl("span", `text-xs font-medium flex-shrink-0 w-10 text-right ${corPct}`, `${pctMateria}%`));
+        cabecaMateria.appendChild(criarEl("span", `text-xs font-medium flex-shrink-0 w-12 text-right ${corPct}`, `${pctMateria}%`));
       } else {
-        cabecaMateria.appendChild(criarEl("span", "text-xs text-stone-600 flex-shrink-0 w-10 text-right", "—"));
+        cabecaMateria.appendChild(criarEl("span", "text-xs text-stone-600 flex-shrink-0 w-12 text-right", "—"));
       }
       cabecaMateria.addEventListener("click", () => {
         if (st.expandido.has(materia.id)) st.expandido.delete(materia.id); else st.expandido.add(materia.id);
@@ -2110,13 +2161,15 @@ function telaEstatisticas() {
             renderArvore();
           });
           linha.appendChild(checkAssunto);
-          linha.appendChild(criarEl("p", "flex-1 min-w-0 text-xs text-stone-300 truncate", assunto));
-          if (st.mostrarTexto) linha.appendChild(criarEl("span", "text-xs text-stone-500 flex-shrink-0", `${dadosAssunto.resolvidas}`));
+          const infoA = criarEl("div", "flex-1 min-w-0");
+          infoA.appendChild(criarEl("p", "text-xs text-stone-300 truncate", assunto));
+          if (st.mostrarTexto) infoA.appendChild(criarEl("p", "text-[11px] text-stone-500 mt-0.5", textoNumeros(dadosAssunto)));
+          linha.appendChild(infoA);
           if (pctAssunto !== null) {
             const corA = pctAssunto >= 70 ? "text-emerald-400" : pctAssunto >= 40 ? "text-amber-400" : "text-red-400";
-            linha.appendChild(criarEl("span", `text-xs font-medium flex-shrink-0 w-10 text-right ${corA}`, `${pctAssunto}%`));
+            linha.appendChild(criarEl("span", `text-xs font-medium flex-shrink-0 w-12 text-right ${corA}`, `${pctAssunto}%`));
           } else {
-            linha.appendChild(criarEl("span", "text-xs text-stone-600 flex-shrink-0 w-10 text-right", "—"));
+            linha.appendChild(criarEl("span", "text-xs text-stone-600 flex-shrink-0 w-12 text-right", "—"));
           }
           listaAssuntos.appendChild(linha);
         });
@@ -2145,7 +2198,7 @@ function telaEstatisticas() {
     });
     const erros = resolvidas - acertos;
     const pct = resolvidas ? Math.round((acertos / resolvidas) * 100) : 0;
-    linhaTotais.textContent = `Seleção → Resolvidas: ${resolvidas} · Acertos: ${acertos} · Erros: ${erros} · Aproveitamento: ${resolvidas ? pct + "%" : "—"}`;
+    linhaTotais.textContent = `Seleção → Feitas: ${resolvidas} · Acertos: ${acertos} · Erros: ${erros} · Aproveitamento: ${resolvidas ? pct + "%" : "—"}`;
     const semSelecao = st.selecionados.size === 0;
     btnCriarCaderno.disabled = semSelecao;
     btnCriarCaderno.classList.toggle("opacity-50", semSelecao);
@@ -2175,7 +2228,7 @@ function telaEstatisticas() {
   });
 
   btnExportar.addEventListener("click", () => {
-    const linhas = [["Matéria", "Assunto", "Resolvidas", "Acertos", "Erros", "Aproveitamento (%)"]];
+    const linhas = [["Matéria", "Assunto", "Feitas", "Acertos", "Erros", "Aproveitamento (%)"]];
     Object.entries(arvoreAtual).forEach(([materiaId, m]) => {
       Object.entries(m.assuntos).forEach(([assunto, a]) => {
         const pct = a.resolvidas ? Math.round((a.acertos / a.resolvidas) * 100) : "";
@@ -2192,6 +2245,7 @@ function telaEstatisticas() {
     URL.revokeObjectURL(url);
   });
 
+  mostrarPeriodo();
   atualizarTudo();
   return c;
 }
@@ -2671,7 +2725,7 @@ function telaGerenciar() {
     const corpo = criarEl("div");
     corpo.appendChild(criarEl("p", "text-xs text-stone-600 mb-1", q.assunto || "(sem assunto)"));
     corpo.appendChild(criarEl("p", "text-sm text-stone-300 font-serif leading-relaxed mb-1", q.enunciado));
-    corpo.appendChild(criarEl("p", "text-xs text-stone-600", `Acertos seguidos: ${q.srs.acertosSeguidos} · Próxima: ${formatarDataBR(q.srs.proximaRevisaoData)}`));
+    corpo.appendChild(criarEl("p", "text-xs text-stone-600", `${q.srs.dificuldade ? NOME_DIFICULDADE[q.srs.dificuldade] + " · " : ""}Próxima: ${formatarDataBR(q.srs.proximaRevisaoData)}`));
     card.appendChild(corpo);
 
     const areaEdicao = criarEl("div", "mt-3 hidden space-y-2 border-t border-stone-800 pt-3");

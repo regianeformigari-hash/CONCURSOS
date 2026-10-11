@@ -480,10 +480,10 @@ function formatarDataBR(str) {
 
 // ---------------------------------------------------------
 // SRS — revisão por dificuldade escolhida por você (cada questão tem seu próprio prazo)
-// Fácil = volta em 7 dias · Médio = 3 dias · Difícil = 1 dia (amanhã)
+// Muito fácil = 15 dias · Fácil = volta em 7 dias · Médio = 3 dias · Difícil = 1 dia (amanhã)
 // ---------------------------------------------------------
-const DIAS_POR_DIFICULDADE = { facil: 7, medio: 3, dificil: 1 };
-const NOME_DIFICULDADE = { facil: "Fácil", medio: "Médio", dificil: "Difícil" };
+const DIAS_POR_DIFICULDADE = { muitofacil: 15, facil: 7, medio: 3, dificil: 1 };
+const NOME_DIFICULDADE = { muitofacil: "Muito fácil", facil: "Fácil", medio: "Médio", dificil: "Difícil" };
 
 function novoSRS() {
   return { intervalo: 0, proximaRevisaoData: hojeStr(), acertosSeguidos: 0, historico: [] };
@@ -1805,11 +1805,12 @@ function painelJustificativa(questao) {
 function painelDificuldade(questao) {
   const wrap = criarEl("div");
   wrap.appendChild(criarEl("p", "text-sm text-stone-300 text-center mb-2", "Como foi essa questão?"));
-  const grade = criarEl("div", "grid grid-cols-3 gap-2");
+  const grade = criarEl("div", "grid grid-cols-2 gap-2");
   const opcoes = [
     ["dificil", "Difícil", "volta amanhã", "bg-red-500/15 border-red-500/40 text-red-300"],
     ["medio", "Médio", "volta em 3 dias", "bg-amber-500/15 border-amber-500/40 text-amber-300"],
     ["facil", "Fácil", "volta em 7 dias", "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"],
+    ["muitofacil", "Muito fácil", "volta em 15 dias", "bg-sky-500/15 border-sky-500/40 text-sky-300"],
   ];
   let travado = false;
   opcoes.forEach(([chave, nome, sub, classe]) => {

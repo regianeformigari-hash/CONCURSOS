@@ -872,6 +872,20 @@ function renderizar() {
 }
 
 // ---- HOME ----
+// ---------------------------------------------------------
+// Tema de cores (Suave = cinza confortável · Sépia = papel · Escuro = original)
+// ---------------------------------------------------------
+function temaAtual() {
+  return document.documentElement.dataset.tema || "suave";
+}
+function aplicarTema(t) {
+  document.documentElement.dataset.tema = t;
+  try { localStorage.setItem("lex-tema", t); } catch (e) {}
+  const cores = { suave: "#2A2E37", sepia: "#F0E6CF", escuro: "#0F1114" };
+  const m = document.querySelector('meta[name="theme-color"]');
+  if (m) m.setAttribute("content", cores[t]);
+}
+
 function telaHome() {
   const questoesDoProjeto = filtrarPorProjetoAtivo(CACHE_QUESTOES);
   const pendentes = questoesDoProjeto.filter(estaPendenteHoje);
@@ -884,7 +898,17 @@ function telaHome() {
   brand.appendChild(tit);
   const btnStats = criarEl("button", "text-stone-400 text-xs border border-stone-800 rounded-lg px-3 py-2", "📊 Estatísticas");
   btnStats.addEventListener("click", () => ir("estatisticas"));
-  brand.appendChild(btnStats);
+  const grupoBtns = criarEl("div", "flex items-center gap-2");
+  const NOMES_TEMA = { suave: "Suave", sepia: "Sépia", escuro: "Escuro" };
+  const btnTema = criarEl("button", "text-stone-400 text-xs border border-stone-800 rounded-lg px-3 py-2", `🎨 ${NOMES_TEMA[temaAtual()]}`);
+  btnTema.addEventListener("click", () => {
+    const ordem = ["suave", "sepia", "escuro"];
+    aplicarTema(ordem[(ordem.indexOf(temaAtual()) + 1) % ordem.length]);
+    btnTema.textContent = `🎨 ${NOMES_TEMA[temaAtual()]}`;
+  });
+  grupoBtns.appendChild(btnTema);
+  grupoBtns.appendChild(btnStats);
+  brand.appendChild(grupoBtns);
   c.appendChild(brand);
 
   // Seletor de projeto ativo (concurso-alvo)

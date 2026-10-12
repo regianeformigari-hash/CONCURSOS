@@ -13,6 +13,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="Lex Revisão" />
 
+<script>
+  try { document.documentElement.dataset.tema = localStorage.getItem("lex-tema") || "suave"; } catch (e) { document.documentElement.dataset.tema = "suave"; }
+</script>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/dexie/dist/dexie.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -39,12 +42,52 @@
   ::selection { background: #C9A24B; color: #0F1114; }
   button { -webkit-tap-highlight-color: transparent; color: inherit; }
   input, textarea, select { color: #0F1114; }
+  /* ===== Temas de leitura (o "Escuro" é o original, sem ajustes) ===== */
+  html[data-tema="suave"] {
+    --b950:#2A2E37; --b900:#343944; --b800:#434957; --b700:#525968; --bi:#E7E1D3;
+    --t100:#EAE5D8; --t200:#DCD7CA; --t300:#C8C3B6; --t400:#ADA89C; --t500:#948F84; --t600:#7C786F; --t700:#66635C;
+    --ok:#6FCF97; --err:#F28B82; --am:#E0B85A;
+  }
+  html[data-tema="sepia"] {
+    --b950:#F0E6CF; --b900:#E7DBBF; --b800:#DACBA8; --b700:#CBBB97; --bi:#FBF5E6;
+    --t100:#30291F; --t200:#3B3226; --t300:#4F4434; --t400:#655843; --t500:#7B6D57; --t600:#948568; --t700:#A89978;
+    --ok:#1E7A4B; --err:#B3372D; --am:#8A5A00;
+  }
+  html[data-tema="sepia"] { --b800:#DACBA8; --t400:#655843; }
+  html[data-tema="suave"], html[data-tema="sepia"] { color-scheme: normal; }
+  html[data-tema="suave"] body, html[data-tema="sepia"] body, html[data-tema="suave"], html[data-tema="sepia"] { background-color: var(--b950) !important; color: var(--t200) !important; }
+  html[data-tema="suave"] ::selection, html[data-tema="sepia"] ::selection { background:#C9A24B; color:#1C1F26; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .bg-stone-950 { background-color: var(--b950) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .bg-stone-900 { background-color: var(--b900) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .bg-stone-900\/60 { background-color: color-mix(in srgb, var(--b900) 60%, transparent) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .bg-stone-900\/40 { background-color: color-mix(in srgb, var(--b900) 40%, transparent) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .bg-stone-800 { background-color: var(--b800) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .bg-stone-700 { background-color: var(--b700) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .bg-stone-100 { background-color: var(--bi) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .border-stone-800, :is(html[data-tema="suave"], html[data-tema="sepia"]) .divide-stone-800 > * + * { border-color: var(--b800) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .border-stone-800\/60 { border-color: color-mix(in srgb, var(--b800) 60%, transparent) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .border-stone-700 { border-color: var(--b700) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .text-stone-100 { color: var(--t100) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .text-stone-200 { color: var(--t200) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .text-stone-300 { color: var(--t300) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .text-stone-400 { color: var(--t400) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .text-stone-500 { color: var(--t500) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .text-stone-600 { color: var(--t600) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .text-stone-700 { color: var(--t700) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .placeholder-stone-600::placeholder { color: var(--t600) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .text-emerald-400, :is(html[data-tema="suave"], html[data-tema="sepia"]) .text-emerald-300 { color: var(--ok) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .text-red-400, :is(html[data-tema="suave"], html[data-tema="sepia"]) .text-red-300 { color: var(--err) !important; }
+  :is(html[data-tema="suave"], html[data-tema="sepia"]) .text-amber-400, :is(html[data-tema="suave"], html[data-tema="sepia"]) .text-amber-300 { color: var(--am) !important; }
+  html[data-tema="sepia"] .text-amber-500\/80, html[data-tema="sepia"] .text-amber-500\/90 { color: #8A5A00 !important; }
+  html[data-tema="sepia"] .text-sky-300 { color: #1F5F8B !important; }
+  html[data-tema="sepia"] input:not([type=checkbox]), html[data-tema="sepia"] textarea, html[data-tema="sepia"] select { color: #30291F !important; }
+  html[data-tema="suave"] input:not([type=checkbox]):not([type=date]), html[data-tema="suave"] textarea, html[data-tema="suave"] select { color: var(--t100) !important; }
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 </head>
 <body class="bg-stone-950 text-stone-200 min-h-screen">
   <div id="app" class="min-h-screen"></div>
-  <script src="./app.js?v=20261011a"></script>
+  <script src="./app.js?v=20261012a"></script>
 </body>
 </html>

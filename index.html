@@ -16,25 +16,9 @@
 <script>
   try { document.documentElement.dataset.tema = localStorage.getItem("lex-tema") || "suave"; } catch (e) { document.documentElement.dataset.tema = "suave"; }
 </script>
-<script src="https://cdn.tailwindcss.com"></script>
-<script src="https://unpkg.com/dexie/dist/dexie.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.13.0/firebase-app-compat.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.13.0/firebase-auth-compat.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.13.0/firebase-firestore-compat.min.js"></script>
-<script>
-  tailwind.config = {
-    theme: {
-      extend: {
-        fontFamily: {
-          serif: ['ui-serif', 'Georgia', 'Cambria', 'Times New Roman', 'serif'],
-          sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
-        },
-        colors: { stone: { 950: '#0F1114', 900: '#1C1F26', 800: '#2C313C' } },
-      },
-    },
-  };
-</script>
+<link rel="stylesheet" href="./tailwind.css?v=20261022a" />
+<script src="./vendor/dexie.min.js"></script>
+<script src="./vendor/chart.umd.js"></script>
 <style>
   html, body { background-color: #0F1114; color: #E7E5E4; -webkit-tap-highlight-color: transparent; overscroll-behavior-y: none; }
   * { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
@@ -88,6 +72,6 @@
 </head>
 <body class="bg-stone-950 text-stone-200 min-h-screen">
   <div id="app" class="min-h-screen"></div>
-  <script src="./app.js?v=20261012a"></script>
+  <script src="./app.js?v=20261022a"></script>
 </body>
 </html>

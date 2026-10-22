@@ -1740,7 +1740,7 @@ function telaSessao() {
         const btn = criarEl(
           "button",
           `flex-1 text-left rounded-xl px-4 py-3 transition active:scale-[0.99] ${riscada ? "bg-stone-900/40 border border-stone-800/60 text-stone-600 line-through" : "bg-stone-900 border border-stone-800 text-stone-200"}`,
-          alt.texto
+          `${LETRAS_ALT[idx]}) ${textoSemLetra(alt.texto)}`
         );
         btn.addEventListener("click", () => responderMC(questao, alt));
 
@@ -1769,6 +1769,45 @@ function telaSessao() {
 
   c.appendChild(areaResposta);
   return c;
+}
+
+// ---------------------------------------------------------
+// Alternativas embaralhadas: letras A–E sempre em ordem na tela,
+// e as letras citadas na justificativa acompanham a nova posição.
+// ---------------------------------------------------------
+const LETRAS_ALT = ["A", "B", "C", "D", "E"];
+
+function textoSemLetra(texto) {
+  return String(texto || "").replace(/^\s*\(?[A-Ea-e]\s*[\)\.\-–:]\s+/, "");
+}
+
+// { A: "C", B: "A", ... } — letra original (cadastro) → letra que aparece agora na tela
+function mapaLetrasEmbaralhadas(questao, embaralhadas) {
+  const mapa = {};
+  (questao.alternativas || []).forEach((alt, i) => {
+    const novo = embaralhadas.indexOf(alt);
+    if (novo >= 0 && LETRAS_ALT[i]) mapa[LETRAS_ALT[i]] = LETRAS_ALT[novo];
+  });
+  return mapa;
+}
+
+function remapearLetras(texto, mapa) {
+  if (!texto || !Object.keys(mapa).length) return texto;
+  const troca = (t) => t.replace(/[A-E]/g, (l) => mapa[l] || l);
+  const re = new RegExp(
+    "(\\b(?:[Aa]lternativas?|[Ll]etras?|[Ii]tem|[Ii]tens|[Oo]p(?:ção|ções)|[Aa]ssertivas?)\\s+)" +
+      "(\\(?[A-E]\\)?(?:\\s*(?:,|;|e|ou)\\s*\\(?[A-E]\\)?)*)" + // 1,2: "alternativa A, B e C"
+    "|(\\()([A-E])(\\))" + // 3,4,5: "(A)"
+    "|(\\b)([A-E])(\\))" + // 6,7,8: "A)"
+    "|((?:^|[\\n;]\\s*))([A-E])(\\s*[–—:\\-]\\s)", // 9,10,11: "A – ...", "A: ..."
+    "g"
+  );
+  return texto.replace(re, (m, k, lista, p1, l1, p2, b, l2, p3, ini, l3, sep) => {
+    if (lista !== undefined) return k + troca(lista);
+    if (l1 !== undefined) return p1 + troca(l1) + p2;
+    if (l2 !== undefined) return b + troca(l2) + p3;
+    return ini + troca(l3) + sep;
+  });
 }
 
 async function responderCE(questao, respostaUsuario) {
@@ -1805,11 +1844,11 @@ function painelFeedbackMC(questao) {
   const { acertou, altEscolhida } = sessaoAtual.ultimaResposta;
   const wrap = criarEl("div");
   const lista = criarEl("div", "space-y-2 mb-4");
-  sessaoAtual.alternativasEmbaralhadas.forEach((alt) => {
+  sessaoAtual.alternativasEmbaralhadas.forEach((alt, idx) => {
     let classe = "bg-stone-900 border border-stone-800 text-stone-400";
     if (alt.correta) classe = "bg-emerald-500/15 border border-emerald-500/40 text-emerald-300";
     else if (alt === altEscolhida) classe = "bg-red-500/15 border border-red-500/40 text-red-300";
-    lista.appendChild(criarEl("div", `w-full text-left rounded-xl px-4 py-3 ${classe}`, alt.texto));
+    lista.appendChild(criarEl("div", `w-full text-left rounded-xl px-4 py-3 ${classe}`, `${LETRAS_ALT[idx]}) ${textoSemLetra(alt.texto)}`));
   });
   wrap.appendChild(lista);
   const banner = criarEl("p", `font-medium mb-3 ${acertou ? "text-emerald-400" : "text-red-400"}`, acertou ? "Você acertou." : "Você errou.");
@@ -1818,10 +1857,18 @@ function painelFeedbackMC(questao) {
   wrap.appendChild(painelDificuldade(questao));
   return wrap;
 }
+function justificativaExibida(questao) {
+  const j = questao.justificativa || "—";
+  if (questao.tipo === "MC" && sessaoAtual && sessaoAtual.alternativasEmbaralhadas) {
+    return remapearLetras(j, mapaLetrasEmbaralhadas(questao, sessaoAtual.alternativasEmbaralhadas));
+  }
+  return j;
+}
+
 function painelJustificativa(questao) {
   const justif = criarEl("div", "bg-stone-900 border border-stone-800 rounded-xl p-4 mb-4");
   justif.appendChild(criarEl("p", "text-xs text-stone-500 mb-1.5", "Justificativa / trecho da lei"));
-  justif.appendChild(criarEl("p", "font-serif text-stone-200 leading-relaxed", questao.justificativa || "—"));
+  justif.appendChild(criarEl("p", "font-serif text-stone-200 leading-relaxed", justificativaExibida(questao)));
   return justif;
 }
 
@@ -1889,11 +1936,12 @@ function calcularArvoreEstatisticas(dataIni, dataFim) {
     const m = porMateria[q.materiaId];
     const chaveAssunto = q.assunto || "(sem assunto)";
     if (!m.assuntos[chaveAssunto]) {
-      m.assuntos[chaveAssunto] = { resolvidas: 0, acertos: 0, idsQuestoes: [] };
+      m.assuntos[chaveAssunto] = { resolvidas: 0, acertos: 0, idsQuestoes: [], idsErradas: [] };
     }
     const a = m.assuntos[chaveAssunto];
     a.idsQuestoes.push(q.id);
     const hist = historicoNoPeriodo(q, dataIni, dataFim);
+    if (hist.some((h) => !h.acertou)) a.idsErradas.push(q.id);
     hist.forEach((h) => {
       a.resolvidas++;
       m.resolvidas++;
@@ -2023,7 +2071,9 @@ function telaEstatisticas() {
   const linhaBotoes = criarEl("div", "grid grid-cols-1 gap-2");
   const btnCriarCaderno = criarEl("button", "w-full bg-amber-500 text-stone-950 font-medium rounded-xl py-3 text-sm", "Criar caderno com seleção");
   const btnExportar = criarEl("button", "w-full bg-stone-800 text-stone-300 rounded-xl py-2.5 text-sm", "Exportar dados (CSV)");
+  const btnExportarErros = criarEl("button", "w-full bg-stone-800 text-red-300 rounded-xl py-2.5 text-sm", "📄 Exportar questões que errei");
   linhaBotoes.appendChild(btnCriarCaderno);
+  linhaBotoes.appendChild(btnExportarErros);
   linhaBotoes.appendChild(btnExportar);
   rodape.appendChild(linhaBotoes);
   c.appendChild(rodape);
@@ -2252,6 +2302,45 @@ function telaEstatisticas() {
     iniciarSessao([...idsQuestoes]);
   });
 
+  btnExportarErros.addEventListener("click", () => {
+    // Usa os assuntos marcados; se nada estiver marcado, usa tudo que está na tela (respeita o período).
+    const ids = new Set();
+    const chaves = st.selecionados.size > 0 ? [...st.selecionados] : null;
+    Object.entries(arvoreAtual).forEach(([materiaId, m]) => {
+      Object.entries(m.assuntos).forEach(([assunto, a]) => {
+        if (chaves && !chaves.includes(`${materiaId}|${assunto}`)) return;
+        a.idsErradas.forEach((id) => ids.add(id));
+      });
+    });
+    const questoes = CACHE_QUESTOES.filter((q) => ids.has(q.id));
+    if (questoes.length === 0) { alert("Nenhuma questão errada no período/seleção atual."); return; }
+    const periodo = st.dataIni || st.dataFim
+      ? `${st.dataIni ? formatarDataBR(st.dataIni) : "início"} a ${st.dataFim ? formatarDataBR(st.dataFim) : "hoje"}`
+      : "todo o período";
+    const linhas = [`QUESTÕES QUE ERREI — ${periodo} — ${questoes.length} questão(ões)`, ""];
+    questoes.forEach((q, i) => {
+      const nErros = historicoNoPeriodo(q, st.dataIni, st.dataFim).filter((h) => !h.acertou).length;
+      linhas.push(`#${i + 1} — ${nomeMateria(q.materiaId)} / ${q.assunto || "(sem assunto)"} (errei ${nErros}x)`);
+      linhas.push(q.enunciado);
+      if (q.tipo === "MC" && Array.isArray(q.alternativas)) {
+        q.alternativas.forEach((alt, idx) => linhas.push(`${LETRAS_ALT[idx]}) ${textoSemLetra(alt.texto)}`));
+        const idxCorreta = q.alternativas.findIndex((alt) => alt.correta);
+        linhas.push(`Gabarito: ${idxCorreta >= 0 ? LETRAS_ALT[idxCorreta] : "—"}`);
+      } else {
+        linhas.push(`Gabarito: ${q.gabarito ? "Certo" : "Errado"}`);
+      }
+      if (q.justificativa) linhas.push(`Justificativa: ${q.justificativa}`);
+      linhas.push("", "------------------------------", "");
+    });
+    const blob = new Blob(["\ufeff" + linhas.join("\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `questoes-que-errei-${hojeStr()}.txt`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  });
+
   btnExportar.addEventListener("click", () => {
     const linhas = [["Matéria", "Assunto", "Feitas", "Acertos", "Erros", "Aproveitamento (%)"]];
     Object.entries(arvoreAtual).forEach(([materiaId, m]) => {
@@ -2285,7 +2374,7 @@ function telaBackup() {
   secNuvem.appendChild(criarEl("p", "text-stone-200 mb-1", "☁️ Sincronização automática"));
 
   if (!firebaseAuth) {
-    secNuvem.appendChild(criarEl("p", "text-xs text-stone-500", "Não foi possível carregar a sincronização (verifique sua internet e recarregue a página)."));
+    secNuvem.appendChild(criarEl("p", "text-xs text-stone-500", "Sincronização desligada: o app funciona 100% sem internet, com tudo guardado neste aparelho. Use o backup manual abaixo para guardar uma cópia."));
   } else if (usuarioLogado) {
     secNuvem.appendChild(criarEl("p", "text-xs text-emerald-400 mb-3", `Conectado como ${usuarioLogado.email}. Os dados sincronizam sozinhos entre seus aparelhos quando há internet.`));
     const btnSair = criarEl("button", "w-full bg-stone-800 text-stone-300 rounded-xl py-2.5 text-sm", "Sair / desconectar este aparelho");
@@ -2510,6 +2599,14 @@ function telaProjetos() {
     const btnEditar = criarEl("button", "text-xs text-amber-400/90", "✏️ Editar");
     topo.appendChild(btnEditar);
     card.appendChild(topo);
+    const linhaExcluir = criarEl("div", "grid grid-cols-2 gap-2 mt-3");
+    const btnExcProj = criarEl("button", "bg-stone-800 text-red-400 rounded-lg py-2 text-xs", "🗑️ Excluir projeto");
+    btnExcProj.addEventListener("click", () => excluirProjetoCompleto(p, false));
+    const btnExcTudo = criarEl("button", "bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg py-2 text-xs", `🗑️ Excluir projeto e questões`);
+    btnExcTudo.addEventListener("click", () => excluirProjetoCompleto(p, true));
+    linhaExcluir.appendChild(btnExcProj);
+    linhaExcluir.appendChild(btnExcTudo);
+    card.appendChild(linhaExcluir);
 
     card.appendChild(criarEl("p", "text-xs text-stone-500", `${(p.materiasIds || []).length} matéria(s) vinculada(s) · ${qsDoProjeto.length} questão(ões)`));
     if (p.descricao) card.appendChild(criarEl("p", "text-xs text-stone-600 mt-1", p.descricao));
@@ -2528,6 +2625,31 @@ function telaProjetos() {
   });
   c.appendChild(lista);
   return c;
+}
+
+// Exclui um projeto (caderno). Com comQuestoes=true, apaga também as questões que
+// pertencem SÓ a este projeto; questões que estão em outros projetos apenas saem deste.
+async function excluirProjetoCompleto(p, comQuestoes) {
+  const doProjeto = CACHE_QUESTOES.filter((q) => Array.isArray(q.projetosIds) && q.projetosIds.includes(p.id));
+  const soDele = doProjeto.filter((q) => q.projetosIds.length === 1);
+  if (comQuestoes) {
+    if (!confirm(`APAGAR o projeto "${p.nome}" e ${soDele.length} questão(ões) que são só dele? Isso não pode ser desfeito.${doProjeto.length > soDele.length ? `\n(${doProjeto.length - soDele.length} questão(ões) que também estão em outros projetos serão mantidas.)` : ""}`)) return;
+    if (!confirm(`Confirmar mesmo? "${p.nome}" e suas questões serão apagados para sempre.`)) return;
+  } else {
+    if (!confirm(`Excluir o projeto "${p.nome}"? As ${doProjeto.length} questões continuam no banco, só deixam de estar vinculadas a ele.`)) return;
+  }
+  for (const q of doProjeto) {
+    if (comQuestoes && q.projetosIds.length === 1) {
+      await Store.deleteQuestao(q.id);
+    } else {
+      q.projetosIds = q.projetosIds.filter((id) => id !== p.id);
+      await salvarQuestao(q);
+    }
+  }
+  await Store.deleteProjeto(p.id);
+  if (PROJETO_ATIVO_ID === p.id) await definirProjetoAtivo(null);
+  await carregarTudo();
+  ir("projetos");
 }
 
 function montarEdicaoProjeto(p, container) {
@@ -2995,9 +3117,9 @@ async function iniciar() {
   renderizar();
 
   if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js").catch((err) => console.warn("SW falhou:", err));
-    });
+    const registrarSW = () => navigator.serviceWorker.register("./sw.js").catch((err) => console.warn("SW falhou:", err));
+    if (document.readyState === "complete") registrarSW();
+    else window.addEventListener("load", registrarSW);
   }
 }
 

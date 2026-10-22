@@ -2,21 +2,18 @@
 // Arquivos do PRÓPRIO app (html/js/json): network-first — sempre busca a
 // versão mais nova quando há internet, e só usa o cache salvo se estiver
 // offline. Bibliotecas externas (CDN) e ícones: cache-first, pois raramente mudam.
-const CACHE_NAME = "lex-revisao-v7";
-const ARQUIVOS_PROPRIOS = ["/", "/index.html", "/app.js", "/manifest.json"];
+const CACHE_NAME = "lex-revisao-v9";
+const ARQUIVOS_PROPRIOS = ["/", "/index.html", "/app.js", "/manifest.json", "/tailwind.css"];
 const ASSETS = [
   "./",
   "./index.html",
   "./app.js",
+  "./tailwind.css",
   "./manifest.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
-  "https://cdn.tailwindcss.com",
-  "https://unpkg.com/dexie/dist/dexie.js",
-  "https://cdn.jsdelivr.net/npm/chart.js",
-  "https://cdnjs.cloudflare.com/ajax/libs/firebase/10.13.0/firebase-app-compat.min.js",
-  "https://cdnjs.cloudflare.com/ajax/libs/firebase/10.13.0/firebase-auth-compat.min.js",
-  "https://cdnjs.cloudflare.com/ajax/libs/firebase/10.13.0/firebase-firestore-compat.min.js",
+  "./vendor/dexie.min.js",
+  "./vendor/chart.umd.js",
 ];
 
 self.addEventListener("install", (event) => {
@@ -55,14 +52,14 @@ self.addEventListener("fetch", (event) => {
           }
           return response;
         })
-        .catch(() => caches.match(event.request).then((cached) => cached || caches.match("./index.html")))
+        .catch(() => caches.match(event.request, { ignoreSearch: true }).then((cached) => cached || caches.match("./index.html")))
     );
     return;
   }
 
   // Bibliotecas externas e ícones: cache primeiro (raramente mudam)
   event.respondWith(
-    caches.match(event.request).then((cached) => {
+    caches.match(event.request, { ignoreSearch: true }).then((cached) => {
       if (cached) return cached;
       return fetch(event.request)
         .then((response) => {
